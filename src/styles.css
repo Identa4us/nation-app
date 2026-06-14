@@ -138,6 +138,8 @@ table.nop-t{width:100%;border-collapse:collapse;font-size:13px}
 .nop-seg.on{border-color:var(--gold);color:var(--tx);background:linear-gradient(180deg,rgba(232,179,73,.08),transparent)}
 .nop-err{background:rgba(248,113,113,.12);border:1px solid rgba(248,113,113,.3);color:#fca5a5;font-size:12.5px;padding:10px 12px;border-radius:9px;margin-bottom:14px}
 .nop-ok{background:rgba(52,211,153,.12);border:1px solid rgba(52,211,153,.3);color:#6ee7b7;font-size:12.5px;padding:10px 12px;border-radius:9px;margin-bottom:14px}
+.nop-linkbtn{display:block;width:100%;text-align:center;margin-top:14px;font-size:13px;font-weight:600;color:var(--mut);transition:.15s}
+.nop-linkbtn:hover{color:var(--gold)}
 
 .nop-flowbar{display:flex;flex-direction:column;gap:11px}
 .nop-flowrow{display:flex;align-items:center;gap:12px}

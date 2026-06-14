@@ -71,13 +71,17 @@ export default function App() {
   const [notifs, setNotifs] = useState([]);
   const [drawer, setDrawer] = useState(false);
   const [toast, setToast] = useState("");
+  const [recovery, setRecovery] = useState(false);
   const flash = (m) => { setToast(m); setTimeout(() => setToast(""), 2600); };
   const reloadRef = useRef(() => {});
 
   /* sesión */
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
+      if (event === "PASSWORD_RECOVERY") setRecovery(true);
+      setSession(s);
+    });
     return () => sub.subscription.unsubscribe();
   }, []);
 
@@ -125,6 +129,7 @@ export default function App() {
   const logout = async () => { await supabase.auth.signOut(); setProfile(null); setOrders([]); setNotifs([]); setProfiles([]); setTab(""); };
 
   if (booting) return <Splash />;
+  if (recovery) return <SetNewPassword onDone={() => setRecovery(false)} />;
   if (!session || !profile) return <Auth />;
 
   // booster pendiente de aprobación
@@ -179,7 +184,7 @@ function Gate({ title, sub, logout }) {
 
 /* ===================== AUTH ===================== */
 function Auth() {
-  const [mode, setMode] = useState("login");
+  const [mode, setMode] = useState("login"); // login | signup | recover
   const [role, setRole] = useState("cliente");
   const [fullName, setName] = useState("");
   const [discord, setDiscord] = useState("");
@@ -188,14 +193,15 @@ function Auth() {
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
   const [busy, setBusy] = useState(false);
+  const clear = () => { setErr(""); setOk(""); };
 
   const submit = async () => {
-    setErr(""); setOk(""); setBusy(true);
+    clear(); setBusy(true);
     try {
       if (mode === "login") {
         const { error } = await supabase.auth.signInWithPassword({ email, password: pass });
         if (error) throw error;
-      } else {
+      } else if (mode === "signup") {
         if (!fullName) throw new Error("Ingresá tu nombre.");
         const { data, error } = await supabase.auth.signUp({
           email, password: pass,
@@ -203,7 +209,12 @@ function Auth() {
         });
         if (error) throw error;
         if (!data.session) { setOk("Cuenta creada. Ya podés iniciar sesión."); setMode("login"); }
-        else if (role === "booster") setOk("Cuenta de booster creada. Espera la aprobación del admin.");
+        else if (role === "booster") setOk("Cuenta creada. Un administrador tiene que aprobarte antes de tomar trabajos.");
+      } else if (mode === "recover") {
+        if (!email) throw new Error("Ingresá tu email.");
+        const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin });
+        if (error) throw error;
+        setOk("Si ese email tiene cuenta, te enviamos un enlace para restablecer la contraseña. Revisá tu casilla (y spam).");
       }
     } catch (e) {
       const m = (e.message || "").toLowerCase();
@@ -215,18 +226,20 @@ function Auth() {
     } finally { setBusy(false); }
   };
 
+  const title = mode === "login" ? "Ingresá con tu cuenta." : mode === "signup" ? "Creá tu cuenta de cliente." : "Recuperá tu contraseña.";
+
   return (
     <div className="nop-auth"><div className="nop-authbox">
       <div className="nop-authhead">
         <div className="badge">Eloboost Nation</div>
         <h1 className="nop-display">Panel de Operaciones</h1>
-        <p>{mode === "login" ? "Ingresá con tu cuenta." : "Creá tu cuenta para empezar."}</p>
+        <p>{title}</p>
       </div>
       <div className="nop-card" style={{ padding: 24 }}>
-        <div className="nop-authtabs">
-          <button className={"nop-authtab" + (mode === "login" ? " on" : "")} onClick={() => { setMode("login"); setErr(""); setOk(""); }}>Iniciar sesión</button>
-          <button className={"nop-authtab" + (mode === "signup" ? " on" : "")} onClick={() => { setMode("signup"); setErr(""); setOk(""); }}>Crear cuenta</button>
-        </div>
+        {mode !== "recover" && <div className="nop-authtabs">
+          <button className={"nop-authtab" + (mode === "login" ? " on" : "")} onClick={() => { setMode("login"); clear(); }}>Iniciar sesión</button>
+          <button className={"nop-authtab" + (mode === "signup" ? " on" : "")} onClick={() => { setMode("signup"); clear(); }}>Crear cuenta</button>
+        </div>}
         {err && <div className="nop-err">{err}</div>}
         {ok && <div className="nop-ok">{ok}</div>}
 
@@ -236,7 +249,7 @@ function Auth() {
               <button type="button" className={"nop-seg" + (role === "cliente" ? " on" : "")} onClick={() => setRole("cliente")}>Cliente</button>
               <button type="button" className={"nop-seg" + (role === "booster" ? " on" : "")} onClick={() => setRole("booster")}>Booster</button>
             </div>
-            <p className="nop-mini">{role === "booster" ? "El admin tiene que habilitar tu acceso luego del registro." : "Tu pedido lo valida el admin antes de pasar a los boosters."}</p>
+            <p className="nop-mini">{role === "booster" ? "Tu cuenta queda pendiente: un admin te acepta o rechaza." : "Tu pedido lo valida el admin antes de pasar a los boosters."}</p>
           </div>
           <div className="nop-field"><label>Nombre o nick <span className="req">*</span></label>
             <input className="nop-input" value={fullName} onChange={(e) => setName(e.target.value)} placeholder="Ej: Alkioz" /></div>
@@ -245,16 +258,59 @@ function Auth() {
         </>}
 
         <div className="nop-field"><label>Email <span className="req">*</span></label>
-          <input className="nop-input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="tu@email.com" /></div>
-        <div className="nop-field"><label>Contraseña <span className="req">*</span></label>
-          <input className="nop-input" type="password" value={pass} onChange={(e) => setPass(e.target.value)} placeholder="••••••••"
-            onKeyDown={(e) => e.key === "Enter" && submit()} /></div>
+          <input className="nop-input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="tu@email.com"
+            onKeyDown={(e) => e.key === "Enter" && mode === "recover" && submit()} /></div>
 
-        <button className="nop-btn nop-btn-gold" style={{ width: "100%" }} disabled={busy || !email || !pass} onClick={submit}>
-          {busy ? "Procesando…" : mode === "login" ? "Entrar" : "Crear cuenta"}<ArrowRight size={15} />
+        {mode !== "recover" && <div className="nop-field"><label>Contraseña <span className="req">*</span></label>
+          <input className="nop-input" type="password" value={pass} onChange={(e) => setPass(e.target.value)} placeholder="••••••••"
+            onKeyDown={(e) => e.key === "Enter" && submit()} /></div>}
+
+        <button className="nop-btn nop-btn-gold" style={{ width: "100%" }} disabled={busy || !email || (mode !== "recover" && !pass)} onClick={submit}>
+          {busy ? "Procesando…" : mode === "login" ? "Entrar" : mode === "signup" ? "Crear cuenta" : "Enviar enlace"}<ArrowRight size={15} />
         </button>
+
+        {mode === "login" && <button className="nop-linkbtn" onClick={() => { setMode("recover"); clear(); }}>¿Olvidaste tu contraseña?</button>}
+        {mode === "recover" && <button className="nop-linkbtn" onClick={() => { setMode("login"); clear(); }}>← Volver a iniciar sesión</button>}
       </div>
       <p style={{ textAlign: "center", color: "var(--mut2)", fontSize: 12, marginTop: 18 }}>Eloboost Nation · Operaciones internas</p>
+    </div></div>
+  );
+}
+
+/* pantalla para fijar nueva contraseña tras el enlace de recuperación */
+function SetNewPassword({ onDone }) {
+  const [pass, setPass] = useState("");
+  const [pass2, setPass2] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    setErr("");
+    if (pass.length < 6) { setErr("Mínimo 6 caracteres."); return; }
+    if (pass !== pass2) { setErr("Las contraseñas no coinciden."); return; }
+    setBusy(true);
+    const { error } = await supabase.auth.updateUser({ password: pass });
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    onDone();
+  };
+  return (
+    <div className="nop-auth"><div className="nop-authbox">
+      <div className="nop-authhead">
+        <div className="badge">Eloboost Nation</div>
+        <h1 className="nop-display">Nueva contraseña</h1>
+        <p>Elegí una contraseña nueva para tu cuenta.</p>
+      </div>
+      <div className="nop-card" style={{ padding: 24 }}>
+        {err && <div className="nop-err">{err}</div>}
+        <div className="nop-field"><label>Nueva contraseña <span className="req">*</span></label>
+          <input className="nop-input" type="password" value={pass} onChange={(e) => setPass(e.target.value)} placeholder="••••••••" /></div>
+        <div className="nop-field"><label>Repetir contraseña <span className="req">*</span></label>
+          <input className="nop-input" type="password" value={pass2} onChange={(e) => setPass2(e.target.value)} placeholder="••••••••"
+            onKeyDown={(e) => e.key === "Enter" && save()} /></div>
+        <button className="nop-btn nop-btn-gold" style={{ width: "100%" }} disabled={busy} onClick={save}>
+          {busy ? "Guardando…" : "Guardar contraseña"}<Check size={15} />
+        </button>
+      </div>
     </div></div>
   );
 }
@@ -272,7 +328,8 @@ function Tabs({ role, tab, setTab, orders, profiles }) {
       {T("validate", "Validaciones", ShieldCheck, pend || null)}
       {T("dash", "Dashboard", Activity)}
       {T("orders", "Pedidos", Hash)}
-      {T("boosters", "Boosters", Users)}
+      {T("clients", "Clientes", Users)}
+      {T("boosters", "Boosters", UserCheck)}
       {T("history", "Historial", Trophy)}
     </div>;
   }
@@ -307,6 +364,7 @@ function Drawer({ notifs, onClose }) {
 function AdminViews({ tab, setTab, ...ctx }) {
   if (tab === "dash") return <AdminDash {...ctx} />;
   if (tab === "orders") return <AdminOrders {...ctx} />;
+  if (tab === "clients") return <AdminClients {...ctx} />;
   if (tab === "boosters") return <AdminBoosters {...ctx} />;
   if (tab === "history") return <AdminHistory {...ctx} />;
   return <AdminValidate {...ctx} />;
@@ -321,20 +379,24 @@ function AdminValidate({ orders, profiles, reload, flash, notify }) {
     await notify(`🆕 Nuevo cliente disponible: ${o.client_name} — ${SERVICES[o.service].label}.`, "booster", null, "new");
     await reload(); flash(`Pedido #${o.id} validado y publicado`);
   };
-  const approveBooster = async (p, cut) => {
+  const acceptBooster = async (p, cut) => {
     await supabase.from("profiles").update({ status: "active", cut }).eq("id", p.id);
     await notify(`Tu cuenta de booster fue aprobada. ¡Ya podés tomar trabajos!`, null, p.id, "done");
-    await reload(); flash(`${p.full_name || p.email} habilitado`);
+    await reload(); flash(`${p.full_name || p.email} aceptado`);
+  };
+  const rejectBooster = async (p) => {
+    await supabase.from("profiles").update({ status: "disabled" }).eq("id", p.id);
+    await reload(); flash(`${p.full_name || p.email} rechazado`);
   };
 
   return <>
     <div className="nop-sectionhead"><div><h1 className="nop-h1">Validaciones</h1>
-      <p className="nop-sub">Confirmá pedidos pagos para publicarlos y habilitá nuevos boosters.</p></div></div>
+      <p className="nop-sub">Aceptá o rechazá boosters nuevos y validá los pedidos pagos.</p></div></div>
 
     <div className="nop-card nop-panel" style={{ marginBottom: 16 }}>
       <div className="nop-panel-h"><UserCheck size={15} style={{ color: "var(--cyan)" }} />Boosters por aprobar ({pendingBoosters.length})</div>
       {pendingBoosters.length === 0 ? <p className="nop-mini">No hay boosters esperando aprobación.</p> :
-        <div style={{ display: "grid", gap: 10 }}>{pendingBoosters.map((p) => <BoosterApprove key={p.id} p={p} onApprove={approveBooster} />)}</div>}
+        <div style={{ display: "grid", gap: 10 }}>{pendingBoosters.map((p) => <BoosterApprove key={p.id} p={p} onAccept={acceptBooster} onReject={rejectBooster} />)}</div>}
     </div>
 
     <div className="nop-card nop-panel">
@@ -354,51 +416,140 @@ function AdminValidate({ orders, profiles, reload, flash, notify }) {
     </div>
   </>;
 }
-function BoosterApprove({ p, onApprove }) {
-  const [cut, setCut] = useState(0.55);
+function BoosterApprove({ p, onAccept, onReject }) {
+  const [cut, setCut] = useState(0.5);
   return <div className="nop-card nop-panel" style={{ background: "var(--bg2)", display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
     <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
       <span className="nop-avatar" style={{ background: "var(--cyan)" }}>{(p.full_name || "?")[0]}</span>
       <div><b style={{ fontSize: 13 }}>{p.full_name || "—"}</b><div className="nop-mini">{p.email} · {p.discord || "sin discord"}</div></div>
     </div>
-    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
       <label className="nop-mini">Corte</label>
-      <select className="nop-select" style={{ width: 90, padding: "8px 10px" }} value={cut} onChange={(e) => setCut(parseFloat(e.target.value))}>
+      <select className="nop-select" style={{ width: 84, padding: "8px 10px" }} value={cut} onChange={(e) => setCut(parseFloat(e.target.value))}>
         {[0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7].map((c) => <option key={c} value={c}>{Math.round(c * 100)}%</option>)}
       </select>
-      <button className="nop-btn nop-btn-cyan nop-btn-sm" onClick={() => onApprove(p, cut)}><Check size={14} />Habilitar</button>
+      <button className="nop-btn nop-btn-cyan nop-btn-sm" onClick={() => onAccept(p, cut)}><Check size={14} />Aceptar</button>
+      <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => onReject(p)}><X size={14} />Rechazar</button>
     </div>
   </div>;
 }
+function AdminClients({ profiles, orders }) {
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(null);
+  let clients = profiles.filter((p) => p.role === "cliente");
+  if (q) clients = clients.filter((p) => ((p.full_name || "") + (p.email || "")).toLowerCase().includes(q.toLowerCase()));
+  const statsOf = (id) => {
+    const mine = orders.filter((o) => o.client_id === id);
+    return {
+      activos: mine.filter((o) => o.status === "in_progress").length,
+      espera: mine.filter((o) => o.status === "pending" || o.status === "available").length,
+      completados: mine.filter((o) => o.status === "completed").length,
+      total: mine.length,
+      gasto: mine.filter((o) => o.status === "completed").reduce((a, o) => a + Number(o.price), 0),
+    };
+  };
+  return <>
+    <div className="nop-sectionhead"><div><h1 className="nop-h1">Clientes</h1>
+      <p className="nop-sub">Usuarios registrados y su actividad. Tocá una fila para ver el detalle.</p></div></div>
+    <div className="nop-card nop-panel" style={{ marginBottom: 14 }}>
+      <div style={{ position: "relative", maxWidth: 320 }}>
+        <Search size={15} style={{ position: "absolute", left: 12, top: 12, color: "var(--mut2)" }} />
+        <input className="nop-input" style={{ paddingLeft: 36 }} placeholder="Buscar por nombre o email" value={q} onChange={(e) => setQ(e.target.value)} />
+      </div>
+    </div>
+    <div className="nop-card nop-panel">
+      {clients.length === 0 ? <Empty icon={Users} title="Sin clientes todavía" sub="Cuando alguien se registre como cliente, aparece acá." /> :
+        <div className="nop-tablewrap"><table className="nop-t">
+          <thead><tr><th>Cliente</th><th>Email</th><th>Discord</th><th>Activos</th><th>En espera</th><th>Completados</th><th>Gastado</th></tr></thead>
+          <tbody>{clients.map((c) => { const s = statsOf(c.id); return (
+            <tr key={c.id} style={{ cursor: "pointer" }} onClick={() => setOpen({ c, s, orders: orders.filter((o) => o.client_id === c.id) })}>
+              <td><div style={{ display: "flex", alignItems: "center", gap: 9 }}><span className="nop-avatar" style={{ background: "var(--violet)" }}>{(c.full_name || "?")[0]?.toUpperCase()}</span><b>{c.full_name || "—"}</b></div></td>
+              <td className="nop-mini">{c.email}</td>
+              <td className="nop-mini">{c.discord || "—"}</td>
+              <td><span style={{ color: "var(--violet)", fontWeight: 600 }}>{s.activos}</span></td>
+              <td><span style={{ color: "var(--amber)", fontWeight: 600 }}>{s.espera}</span></td>
+              <td><span style={{ color: "var(--grn)", fontWeight: 600 }}>{s.completados}</span></td>
+              <td style={{ color: "var(--gold)" }}>{fmtARS(s.gasto)}</td>
+            </tr>); })}</tbody>
+        </table></div>}
+    </div>
+    {open && <ClientDetailModal data={open} onClose={() => setOpen(null)} />}
+  </>;
+}
+function ClientDetailModal({ data, onClose }) {
+  const { c, s, orders } = data;
+  return <div className="nop-modal" onClick={onClose}><div className="nop-card nop-modalbox" onClick={(e) => e.stopPropagation()}>
+    <div className="hd"><h3>{c.full_name || "Cliente"}</h3><button className="nop-iconbtn" onClick={onClose}><X size={16} /></button></div>
+    <div className="bd">
+      <div style={{ display: "flex", justifyContent: "space-between", padding: "9px 0", borderBottom: "1px solid var(--line)" }}><span className="nop-mini">Email</span><span style={{ fontSize: 13 }}>{c.email}</span></div>
+      <div style={{ display: "flex", justifyContent: "space-between", padding: "9px 0", borderBottom: "1px solid var(--line)" }}><span className="nop-mini">Discord</span><span style={{ fontSize: 13 }}>{c.discord || "—"}</span></div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, margin: "14px 0", textAlign: "center" }}>
+        <div className="nop-card" style={{ padding: "12px 8px", background: "var(--bg2)" }}><div className="nop-mini">Activos</div><div className="nop-display" style={{ fontSize: 18, fontWeight: 700, color: "var(--violet)", marginTop: 4 }}>{s.activos}</div></div>
+        <div className="nop-card" style={{ padding: "12px 8px", background: "var(--bg2)" }}><div className="nop-mini">En espera</div><div className="nop-display" style={{ fontSize: 18, fontWeight: 700, color: "var(--amber)", marginTop: 4 }}>{s.espera}</div></div>
+        <div className="nop-card" style={{ padding: "12px 8px", background: "var(--bg2)" }}><div className="nop-mini">Completados</div><div className="nop-display" style={{ fontSize: 18, fontWeight: 700, color: "var(--grn)", marginTop: 4 }}>{s.completados}</div></div>
+      </div>
+      <div className="nop-panel-h" style={{ fontSize: 13, marginBottom: 8 }}>Pedidos</div>
+      {orders.length === 0 ? <p className="nop-mini">Sin pedidos.</p> :
+        <div style={{ display: "grid", gap: 8 }}>{orders.sort((a, b) => b.id - a.id).map((o) => (
+          <div key={o.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid var(--line)" }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}><b style={{ color: "var(--mut)", fontSize: 12 }}>#{o.id}</b><SvcTag s={o.service} /><StatusBadge s={o.status} /></div>
+            <b style={{ fontSize: 13 }}>{fmtARS(o.price)}</b>
+          </div>))}</div>}
+    </div>
+  </div></div>;
+}
 
 function AdminDash({ orders, profiles }) {
-  const completed = orders.filter((o) => o.status === "completed");
-  const active = orders.filter((o) => o.status === "in_progress");
-  const pending = orders.filter((o) => o.status === "pending" || o.status === "available");
+  const [month, setMonth] = useState("all");
+
+  const monthKey = (d) => { if (!d) return null; const x = new Date(d); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0"); };
+  const monthLabel = (k) => { const [y, m] = k.split("-"); return new Date(y, m - 1, 1).toLocaleDateString("es-AR", { month: "long", year: "numeric" }); };
+  const months = useMemo(() => {
+    const set = new Set();
+    orders.forEach((o) => { const k = monthKey(o.completed_at || o.created_at); if (k) set.add(k); });
+    return Array.from(set).sort().reverse();
+  }, [orders]);
+  const inMonth = (d) => month === "all" || monthKey(d) === month;
+
+  // métricas históricas: por mes de cierre / creación
+  const completed = orders.filter((o) => o.status === "completed" && inMonth(o.completed_at || o.created_at));
+  const scopedAll = orders.filter((o) => inMonth(o.completed_at || o.created_at));
   const facturacion = completed.reduce((a, o) => a + Number(o.price), 0);
   const ganancia = completed.reduce((a, o) => a + Number(o.profit || 0), 0);
   const ratings = completed.filter((o) => o.survey_rating).map((o) => o.survey_rating);
   const avg = ratings.length ? ratings.reduce((a, b) => a + b, 0) / ratings.length : 0;
-  const byService = Object.keys(SERVICES).map((k) => ({ name: SERVICES[k].label, value: orders.filter((o) => o.service === k).length, color: SERVICES[k].color }));
+  const byService = Object.keys(SERVICES).map((k) => ({ name: SERVICES[k].label, value: scopedAll.filter((o) => o.service === k).length, color: SERVICES[k].color }));
+
+  // operativo en vivo (no depende del mes)
+  const liveActive = orders.filter((o) => o.status === "in_progress");
+  const liveQueue = orders.filter((o) => o.status === "pending" || o.status === "available");
   const boosters = profiles.filter((p) => p.role === "booster" && p.status === "active");
-  const load = boosters.map((b) => ({ ...b, n: active.filter((o) => o.booster_id === b.id).length }));
+  const load = boosters.map((b) => ({ ...b, n: liveActive.filter((o) => o.booster_id === b.id).length }));
 
   const kpi = (lbl, val, Icon, color, sub) => (
     <div className="nop-card nop-kpi"><div className="gl" style={{ background: color }} />
       <div className="lbl"><Icon size={13} style={{ color }} />{lbl}</div>
       <div className="val">{val}</div>{sub && <div className="delta">{sub}</div>}</div>
   );
+  const periodo = month === "all" ? "histórico" : monthLabel(month);
   return <>
-    <div className="nop-sectionhead"><div><h1 className="nop-h1">Dashboard</h1><p className="nop-sub">Resumen del negocio en tiempo real.</p></div></div>
+    <div className="nop-sectionhead">
+      <div><h1 className="nop-h1">Dashboard</h1>
+        <p className="nop-sub">En vivo: <b style={{ color: "var(--cyan)" }}>{liveActive.length}</b> en proceso · <b style={{ color: "var(--amber)" }}>{liveQueue.length}</b> en cola.</p></div>
+      <select className="nop-select" style={{ width: "auto", minWidth: 170 }} value={month} onChange={(e) => setMonth(e.target.value)}>
+        <option value="all">Todo el histórico</option>
+        {months.map((k) => <option key={k} value={k}>{monthLabel(k)}</option>)}
+      </select>
+    </div>
     <div className="nop-grid-kpi" style={{ marginBottom: 14 }}>
-      {kpi("Facturación", fmtARS(facturacion), Wallet, "var(--gold)", `${completed.length} servicios cerrados`)}
+      {kpi("Facturación", fmtARS(facturacion), Wallet, "var(--gold)", periodo)}
       {kpi("Ganancia neta", fmtARS(ganancia), TrendingUp, "var(--grn)", "después de pagar boosters")}
-      {kpi("En proceso", active.length, Activity, "var(--cyan)", `${pending.length} en cola`)}
+      {kpi("Servicios cerrados", completed.length, Trophy, "var(--cyan)", periodo)}
       {kpi("Satisfacción", avg ? avg.toFixed(1) + " ★" : "—", Star, "var(--violet)", `${ratings.length} reseñas`)}
     </div>
     <div className="nop-twocol" style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 14 }}>
       <div className="nop-card nop-panel">
-        <div className="nop-panel-h"><Activity size={15} style={{ color: "var(--gold)" }} />Carga por booster</div>
+        <div className="nop-panel-h"><Activity size={15} style={{ color: "var(--gold)" }} />Carga por booster (ahora)</div>
         {load.length === 0 ? <p className="nop-mini">Todavía no hay boosters activos.</p> :
           <div className="nop-flowbar">{load.map((b) => {
             const tag = b.n >= 7 ? ["Saturado", "var(--red)"] : b.n >= 3 ? ["Ideal", "var(--grn)"] : b.n >= 1 ? ["Liviano", "var(--cyan)"] : ["Libre", "var(--mut2)"];
@@ -408,7 +559,7 @@ function AdminDash({ orders, profiles }) {
         <p className="nop-mini" style={{ marginTop: 14 }}>Libre 0 · Ideal 3–6 · Saturado 7+.</p>
       </div>
       <div className="nop-card nop-panel">
-        <div className="nop-panel-h"><Hash size={15} style={{ color: "var(--cyan)" }} />Pedidos por servicio</div>
+        <div className="nop-panel-h"><Hash size={15} style={{ color: "var(--cyan)" }} />Pedidos por servicio ({periodo})</div>
         <ResponsiveContainer width="100%" height={210}>
           <BarChart data={byService} margin={{ left: -18, right: 8, top: 8 }}>
             <XAxis dataKey="name" tick={{ fill: "#8A95AD", fontSize: 11 }} axisLine={{ stroke: "#26304A" }} tickLine={false} />
@@ -451,8 +602,9 @@ function AdminBoosters({ orders, profiles, reload, flash }) {
   const active = orders.filter((o) => o.status === "in_progress");
   const setCut = async (p, cut) => { await supabase.from("profiles").update({ cut }).eq("id", p.id); await reload(); flash(`Corte de ${p.full_name} → ${Math.round(cut * 100)}%`); };
   const setStatus = async (p, status) => { await supabase.from("profiles").update({ status }).eq("id", p.id); await reload(); flash(`${p.full_name}: ${status}`); };
+
   return <>
-    <div className="nop-sectionhead"><div><h1 className="nop-h1">Boosters</h1><p className="nop-sub">Equipo, cortes, estado y desempeño.</p></div></div>
+    <div className="nop-sectionhead"><div><h1 className="nop-h1">Boosters</h1><p className="nop-sub">Equipo, cortes, estado y desempeño. Las altas se aprueban desde Validaciones.</p></div></div>
     <div className="nop-card nop-panel"><div className="nop-tablewrap"><table className="nop-t">
       <thead><tr><th>Booster</th><th>Estado</th><th>Corte</th><th>Activos</th><th>Hechos</th><th>Pagado</th><th>★</th><th>Acción</th></tr></thead>
       <tbody>{boosters.map((b) => {
