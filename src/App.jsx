@@ -3,6 +3,7 @@ import {
   Shield, Swords, GraduationCap, Sparkles, Bell, LogOut, Plus, Check, Clock, Play,
   Flag, Star, Users, TrendingUp, Wallet, Activity, ChevronRight, Trophy, MessageCircle,
   Search, X, ArrowRight, Crown, Zap, Hash, UserCheck, ShieldCheck, Trash2, Send,
+  LifeBuoy, Copy, Eye, EyeOff, Upload, FileText, Gamepad2, Plus as PlusIc, Power,
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import { supabase } from "./supabaseClient";
@@ -19,6 +20,12 @@ const SERVICES = {
 const DISCORD_INVITE = "https://discord.gg/Fxghn7S5";
 const STATUS_FLOW = ["pending", "available", "in_progress", "completed"];
 const STATUS_LABEL = { pending: "En revisión", available: "Disponible", in_progress: "En proceso", completed: "Finalizado", cancelled: "Cancelado" };
+
+const SUPPORT_WA = "https://api.whatsapp.com/send?phone=542214287466&text=Hola!%20Necesito%20ayuda%20con%20Eloboost%20Nation";
+const PAY_ALIAS = "boost.nation.arq";
+const PAY_NAME = "$felipemoneti";
+const PAYPAL_URL = "https://www.paypal.com/paypalme/eloboostlolgg";
+const ACC_STATUS_LABEL = { activa: "Disponible", inactiva: "En uso", deshabilitada: "Deshabilitada" };
 
 const TIER_DIV_COST = { Hierro: 3000, Bronce: 3500, Plata: 4500, Oro: 6000, Platino: 8500, Esmeralda: 12000, Diamante: 17000 };
 const COACHING_PRICE = { 1: 15000, 3: 35000, 5: 50000 };
@@ -68,6 +75,7 @@ export default function App() {
   const [tab, setTab] = useState("");
   const [orders, setOrders] = useState([]);
   const [profiles, setProfiles] = useState([]);
+  const [accounts, setAccounts] = useState([]);
   const [notifs, setNotifs] = useState([]);
   const [drawer, setDrawer] = useState(false);
   const [toast, setToast] = useState("");
@@ -108,6 +116,10 @@ export default function App() {
     setOrders(ord || []);
     const { data: nt } = await supabase.from("notifications").select("*").order("created_at", { ascending: false }).limit(40);
     setNotifs(nt || []);
+    if (profile.role === "admin" || profile.role === "booster") {
+      const { data: acc } = await supabase.from("game_accounts").select("*").order("created_at", { ascending: false });
+      setAccounts(acc || []);
+    }
     if (profile.role === "admin") {
       const { data: pf } = await supabase.from("profiles").select("*").order("created_at", { ascending: false });
       setProfiles(pf || []);
@@ -123,6 +135,7 @@ export default function App() {
     const ch = supabase.channel("nop-rt")
       .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, () => reloadRef.current())
       .on("postgres_changes", { event: "*", schema: "public", table: "notifications" }, () => reloadRef.current())
+      .on("postgres_changes", { event: "*", schema: "public", table: "game_accounts" }, () => reloadRef.current())
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [profile]);
@@ -177,7 +190,7 @@ export default function App() {
     }
   };
 
-  const ctx = { profile, orders, profiles, reload, flash, notify, deleteOrder };
+  const ctx = { profile, orders, profiles, accounts, reload, flash, notify, deleteOrder };
   const avatarColor = profile.role === "admin" ? "var(--gold)" : profile.role === "booster" ? "var(--cyan)" : "var(--violet)";
 
   return (
@@ -187,6 +200,7 @@ export default function App() {
           <div className="nop-logo"><div className="nop-logo-mark"><Crown size={19} /></div><div><b>NATION</b><span>OPS PANEL</span></div></div>
           <div className="nop-spacer" />
           <span className="nop-roletag">{profile.role === "admin" ? "Admin" : profile.role === "booster" ? "Booster" : "Cliente"}</span>
+          <a className="nop-iconbtn" href={SUPPORT_WA} target="_blank" rel="noreferrer" title="Soporte por WhatsApp" style={{ color: "#25D366" }}><LifeBuoy size={17} /></a>
           <button className="nop-iconbtn" onClick={openDrawer}><Bell size={17} />{unread > 0 && <span className="nop-dot">{unread > 9 ? "9+" : unread}</span>}</button>
           <div className="nop-userchip"><span className="nm">{profile.full_name || profile.email}</span>
             <span className="nop-avatar" style={{ background: avatarColor }}>{(profile.full_name || "?")[0]?.toUpperCase()}</span></div>
@@ -371,6 +385,7 @@ function Tabs({ role, tab, setTab, orders, profiles }) {
       {T("dash", "Dashboard", Activity)}
       {T("orders", "Pedidos", Hash)}
       {T("clients", "Clientes", Users)}
+      {T("accounts", "Cuentas", Gamepad2)}
       {T("boosters", "Boosters", UserCheck)}
       {T("history", "Historial", Trophy)}
     </div>;
@@ -380,6 +395,7 @@ function Tabs({ role, tab, setTab, orders, profiles }) {
     return <div className="nop-tabs">
       {T("board", "Trabajos disponibles", Zap, open || null)}
       {T("mine", "Mis servicios", Swords)}
+      {T("accounts", "Cuentas", Gamepad2)}
       {T("hist", "Mi historial", Trophy)}
     </div>;
   }
@@ -417,6 +433,7 @@ function AdminViews({ tab, setTab, ...ctx }) {
   if (tab === "dash") return <AdminDash {...ctx} />;
   if (tab === "orders") return <AdminOrders {...ctx} />;
   if (tab === "clients") return <AdminClients {...ctx} />;
+  if (tab === "accounts") return <AdminAccounts {...ctx} />;
   if (tab === "boosters") return <AdminBoosters {...ctx} />;
   if (tab === "history") return <AdminHistory {...ctx} />;
   return <AdminValidate {...ctx} />;
@@ -457,6 +474,12 @@ function AdminValidate({ orders, profiles, reload, flash, notify }) {
     shareWhatsApp(o);   // se abre primero (dentro del click) para que el navegador no lo bloquee
     validateOrder(o);
   };
+  const viewReceipt = async (o) => {
+    if (!o.receipt_path) { flash("Este pedido no tiene comprobante."); return; }
+    const { data, error } = await supabase.storage.from("comprobantes").createSignedUrl(o.receipt_path, 3600);
+    if (error || !data) { flash("No se pudo abrir el comprobante."); return; }
+    window.open(data.signedUrl, "_blank");
+  };
   const acceptBooster = async (p, cut) => {
     await supabase.from("profiles").update({ status: "active", cut }).eq("id", p.id);
     await notify(`Tu cuenta de booster fue aprobada. ¡Ya podés tomar trabajos!`, null, p.id, "done");
@@ -488,6 +511,7 @@ function AdminValidate({ orders, profiles, reload, flash, notify }) {
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
               <b className="nop-display" style={{ color: "var(--gold)" }}>{fmtARS(o.price)}</b>
+              <button className="nop-btn nop-btn-cyan nop-btn-sm" onClick={() => viewReceipt(o)} disabled={!o.receipt_path}><FileText size={14} />{o.receipt_path ? "Ver comprobante" : "Sin comprobante"}</button>
               <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => validateOrder(o)}><Check size={14} />Validar</button>
               <button className="nop-btn nop-btn-wa nop-btn-sm" onClick={() => validateAndShare(o)}><Send size={14} />Validar y avisar</button>
             </div>
@@ -772,6 +796,7 @@ function OrderModal({ o, onClose, onDelete }) {
 /* ===================== BOOSTER ===================== */
 function BoosterViews({ tab, ...ctx }) {
   if (tab === "mine") return <BoosterMine {...ctx} />;
+  if (tab === "accounts") return <BoosterAccounts {...ctx} />;
   if (tab === "hist") return <BoosterHist {...ctx} />;
   return <BoosterBoard {...ctx} />;
 }
@@ -857,13 +882,14 @@ function ClientViews({ tab, setTab, ...ctx }) {
 }
 function ClientHome({ profile, orders, reload, flash, notify, setTab }) {
   const mine = orders.filter((o) => o.client_id === profile.id);
+  const supportBtn = <a className="nop-btn nop-btn-wa nop-btn-sm" href={SUPPORT_WA} target="_blank" rel="noreferrer"><MessageCircle size={14} />Soporte</a>;
   if (mine.length === 0) return <>
-    <div className="nop-sectionhead"><div><h1 className="nop-h1">Hola, {profile.full_name} 👋</h1><p className="nop-sub">Todavía no tenés pedidos.</p></div></div>
+    <div className="nop-sectionhead"><div><h1 className="nop-h1">Hola, {profile.full_name} 👋</h1><p className="nop-sub">Todavía no tenés pedidos.</p></div>{supportBtn}</div>
     <div className="nop-card"><Empty icon={Trophy} title="Sin pedidos activos" sub="Cargá tu primer servicio y, una vez validado, un booster lo toma." />
       <div style={{ textAlign: "center", paddingBottom: 28 }}><button className="nop-btn nop-btn-gold" onClick={() => setTab("new")}><Plus size={15} />Solicitar un servicio</button></div></div>
   </>;
   return <>
-    <div className="nop-sectionhead"><div><h1 className="nop-h1">Mis pedidos</h1><p className="nop-sub">Seguí el estado en vivo.</p></div></div>
+    <div className="nop-sectionhead"><div><h1 className="nop-h1">Mis pedidos</h1><p className="nop-sub">Seguí el estado en vivo.</p></div>{supportBtn}</div>
     <div style={{ display: "grid", gap: 16 }}>{mine.map((o) => <ClientOrderCard key={o.id} o={o} reload={reload} flash={flash} notify={notify} />)}</div>
   </>;
 }
@@ -904,74 +930,282 @@ function ClientOrderCard({ o, reload, flash, notify }) {
   </div>;
 }
 function ClientNew({ profile, reload, flash, notify, setTab }) {
+  const [step, setStep] = useState(1);
   const [service, setService] = useState("duoboost");
   const [cur, setCur] = useState("Oro"), [curD, setCurD] = useState("IV");
   const [tgt, setTgt] = useState("Platino"), [tgtD, setTgtD] = useState("IV");
   const [server, setServer] = useState("LAS"), [lp, setLp] = useState("+20"), [games, setGames] = useState(3);
   const [roleChamp, setRoleChamp] = useState(""), [notes, setNotes] = useState("");
-  const [payment, setPayment] = useState("Transferencia (pesos)");
+  const [currency, setCurrency] = useState("ars"); // ars | usd
+  const [file, setFile] = useState(null);
   const [busy, setBusy] = useState(false);
   const isCoaching = service === "coaching";
   const price = useMemo(() => isCoaching ? COACHING_PRICE[games] : estimateDuo(cur, curD, tgt, tgtD, service === "combo"), [service, cur, curD, tgt, tgtD, games, isCoaching]);
+  const SvcIc = ({ k }) => { const Ic = SERVICES[k].icon; return <Ic size={19} />; };
+  const copy = (t) => { try { navigator.clipboard.writeText(t); flash("Copiado: " + t); } catch (e) { flash("Copiá manualmente: " + t); } };
 
   const submit = async () => {
+    if (!file) { flash("Subí el comprobante de pago para continuar."); return; }
     setBusy(true);
-    const row = {
-      client_id: profile.id, client_name: profile.full_name, client_discord: profile.discord || profile.email,
-      service, cur_rank: cur, cur_div: curD,
-      tgt_rank: isCoaching ? cur : tgt, tgt_div: isCoaching ? curD : tgtD,
-      server, lp: isCoaching ? null : lp, games: isCoaching ? games : null,
-      role_champ: isCoaching ? `${roleChamp || "Sin preferencia"} · ${games} partida${games > 1 ? "s" : ""}` : roleChamp,
-      notes, payment, price, status: "pending",
-    };
-    const { data: created, error } = await supabase.from("orders").insert(row).select("id").single();
-    setBusy(false);
-    if (error) { flash("No se pudo crear el pedido."); return; }
-    await notify(`Nuevo pedido de ${profile.full_name} entró por validar.`, "admin", null, "new", "order", created?.id);
-    await reload(); flash("¡Pedido enviado! Lo validamos y pasa a los boosters."); setTab("home");
+    try {
+      const ext = (file.name.split(".").pop() || "dat").toLowerCase();
+      const path = `${profile.id}/${Date.now()}.${ext}`;
+      const up = await supabase.storage.from("comprobantes").upload(path, file, { upsert: false });
+      if (up.error) throw up.error;
+      const row = {
+        client_id: profile.id, client_name: profile.full_name, client_discord: profile.discord || profile.email,
+        service, cur_rank: cur, cur_div: curD,
+        tgt_rank: isCoaching ? cur : tgt, tgt_div: isCoaching ? curD : tgtD,
+        server, lp: isCoaching ? null : lp, games: isCoaching ? games : null,
+        role_champ: isCoaching ? `${roleChamp || "Sin preferencia"} · ${games} partida${games > 1 ? "s" : ""}` : roleChamp,
+        notes, payment: currency === "ars" ? "Transferencia (pesos)" : "PayPal (USD)", price, status: "pending",
+        receipt_path: path,
+      };
+      const { data: created, error } = await supabase.from("orders").insert(row).select("id").single();
+      if (error) throw error;
+      await notify(`Nuevo pedido de ${profile.full_name} entró por validar (con comprobante).`, "admin", null, "new", "order", created?.id);
+      await reload(); flash("¡Pedido enviado! Validamos el comprobante y pasa a los boosters."); setTab("home");
+    } catch (e) {
+      flash("No se pudo enviar el pedido. Reintentá.");
+    } finally { setBusy(false); }
   };
-  const SvcIc = ({ k }) => { const Ic = SERVICES[k].icon; return <Ic size={19} />; };
 
   return <>
-    <div className="nop-sectionhead"><div><h1 className="nop-h1">Solicitar servicio</h1><p className="nop-sub">Jugás en tu propia cuenta — no pedimos usuario ni contraseña. 0% riesgo.</p></div></div>
+    <div className="nop-sectionhead"><div><h1 className="nop-h1">Solicitar servicio</h1>
+      <p className="nop-sub">Paso {step} de 2 · {step === 1 ? "datos del servicio" : "pago y comprobante"}</p></div></div>
+
     <div className="nop-card nop-panel" style={{ maxWidth: 720 }}>
-      <label style={{ fontSize: 12, fontWeight: 600, color: "var(--mut)", display: "block", marginBottom: 10 }}>1 · Elegí el servicio</label>
-      <div className="nop-svcpick">{Object.keys(SERVICES).map((k) => (
-        <button key={k} type="button" className={"nop-svccard" + (service === k ? " on" : "")} onClick={() => setService(k)}>
-          <div className="ic" style={{ background: SERVICES[k].color + "1f", color: SERVICES[k].color }}><SvcIc k={k} /></div>
-          <h4>{SERVICES[k].label}</h4><p>{SERVICES[k].desc}</p></button>))}</div>
+      {step === 1 && <>
+        <label style={{ fontSize: 12, fontWeight: 600, color: "var(--mut)", display: "block", marginBottom: 10 }}>1 · Elegí el servicio</label>
+        <div className="nop-svcpick">{Object.keys(SERVICES).map((k) => (
+          <button key={k} type="button" className={"nop-svccard" + (service === k ? " on" : "")} onClick={() => setService(k)}>
+            <div className="ic" style={{ background: SERVICES[k].color + "1f", color: SERVICES[k].color }}><SvcIc k={k} /></div>
+            <h4>{SERVICES[k].label}</h4><p>{SERVICES[k].desc}</p></button>))}</div>
 
-      <label style={{ fontSize: 12, fontWeight: 600, color: "var(--mut)", display: "block", margin: "6px 0 12px" }}>2 · {isCoaching ? "Tu nivel y cuántas partidas" : "Liga actual y objetivo"}</label>
-      {!isCoaching ? <div className="nop-row2" style={{ marginBottom: 4 }}>
-        <div className="nop-field" style={{ marginBottom: 8 }}><label>Liga actual <span className="req">*</span></label><div className="nop-row2">
-          <select className="nop-select" value={cur} onChange={(e) => setCur(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
-          <select className="nop-select" value={curD} onChange={(e) => setCurD(e.target.value)} disabled={cur === "Master"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select></div></div>
-        <div className="nop-field" style={{ marginBottom: 8 }}><label>Liga objetivo <span className="req">*</span></label><div className="nop-row2">
-          <select className="nop-select" value={tgt} onChange={(e) => setTgt(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
-          <select className="nop-select" value={tgtD} onChange={(e) => setTgtD(e.target.value)} disabled={tgt === "Master"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select></div></div>
-      </div> : <div className="nop-row2">
-        <div className="nop-field"><label>Tu liga actual</label><div className="nop-row2">
-          <select className="nop-select" value={cur} onChange={(e) => setCur(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
-          <select className="nop-select" value={curD} onChange={(e) => setCurD(e.target.value)} disabled={cur === "Master"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select></div></div>
-        <div className="nop-field"><label>Cantidad de partidas</label>
-          <select className="nop-select" value={games} onChange={(e) => setGames(parseInt(e.target.value))}><option value={1}>1 partida</option><option value={3}>3 partidas</option><option value={5}>5 partidas</option></select></div>
-      </div>}
+        <label style={{ fontSize: 12, fontWeight: 600, color: "var(--mut)", display: "block", margin: "6px 0 12px" }}>2 · {isCoaching ? "Tu nivel y cuántas partidas" : "Liga actual y objetivo"}</label>
+        {!isCoaching ? <div className="nop-row2" style={{ marginBottom: 4 }}>
+          <div className="nop-field" style={{ marginBottom: 8 }}><label>Liga actual <span className="req">*</span></label><div className="nop-row2">
+            <select className="nop-select" value={cur} onChange={(e) => setCur(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
+            <select className="nop-select" value={curD} onChange={(e) => setCurD(e.target.value)} disabled={cur === "Master"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select></div></div>
+          <div className="nop-field" style={{ marginBottom: 8 }}><label>Liga objetivo <span className="req">*</span></label><div className="nop-row2">
+            <select className="nop-select" value={tgt} onChange={(e) => setTgt(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
+            <select className="nop-select" value={tgtD} onChange={(e) => setTgtD(e.target.value)} disabled={tgt === "Master"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select></div></div>
+        </div> : <div className="nop-row2">
+          <div className="nop-field"><label>Tu liga actual</label><div className="nop-row2">
+            <select className="nop-select" value={cur} onChange={(e) => setCur(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
+            <select className="nop-select" value={curD} onChange={(e) => setCurD(e.target.value)} disabled={cur === "Master"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select></div></div>
+          <div className="nop-field"><label>Cantidad de partidas</label>
+            <select className="nop-select" value={games} onChange={(e) => setGames(parseInt(e.target.value))}><option value={1}>1 partida</option><option value={3}>3 partidas</option><option value={5}>5 partidas</option></select></div>
+        </div>}
 
-      <label style={{ fontSize: 12, fontWeight: 600, color: "var(--mut)", display: "block", margin: "10px 0 12px" }}>3 · Detalles</label>
+        <label style={{ fontSize: 12, fontWeight: 600, color: "var(--mut)", display: "block", margin: "10px 0 12px" }}>3 · Detalles</label>
+        <div className="nop-row2">
+          <div className="nop-field"><label>Servidor <span className="req">*</span></label><select className="nop-select" value={server} onChange={(e) => setServer(e.target.value)}><option>LAS</option><option>LAN</option><option>BR</option></select></div>
+          {!isCoaching && <div className="nop-field"><label>Ganancia LP aprox</label><select className="nop-select" value={lp} onChange={(e) => setLp(e.target.value)}><option>+15</option><option>+20</option><option>+25</option></select></div>}
+        </div>
+        <div className="nop-field"><label>Rol / campeón preferido</label><input className="nop-input" value={roleChamp} onChange={(e) => setRoleChamp(e.target.value)} placeholder="Ej: ADC, Mid Katarina, Flash en D" /></div>
+        <div className="nop-field"><label>Notas para el booster</label><textarea className="nop-ta" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Horarios, preferencias, lo que quieras aclarar…" /></div>
+
+        <div className="nop-card" style={{ padding: 16, background: "var(--bg2)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 14 }}>
+          <div><div className="nop-mini">Precio estimado {service === "combo" && "(incluye coaching en vivo +50%)"}</div>
+            <div className="nop-display" style={{ fontSize: 26, fontWeight: 700, color: "var(--gold)" }}>{fmtARS(price)}</div>
+            <div className="nop-mini">Lo confirma el equipo según tu MMR.</div></div>
+          <button className="nop-btn nop-btn-gold" onClick={() => setStep(2)}>Siguiente: pago <ArrowRight size={15} /></button>
+        </div>
+      </>}
+
+      {step === 2 && <>
+        <label style={{ fontSize: 12, fontWeight: 600, color: "var(--mut)", display: "block", marginBottom: 10 }}>4 · Elegí la moneda</label>
+        <div className="nop-segwrap" style={{ marginBottom: 18 }}>
+          <button type="button" className={"nop-seg" + (currency === "ars" ? " on" : "")} onClick={() => setCurrency("ars")}>Pesos (transferencia)</button>
+          <button type="button" className={"nop-seg" + (currency === "usd" ? " on" : "")} onClick={() => setCurrency("usd")}>USD (PayPal)</button>
+        </div>
+
+        {currency === "ars" ? (
+          <div className="nop-card" style={{ padding: 18, background: "var(--bg2)", marginBottom: 18 }}>
+            <div className="nop-panel-h" style={{ marginBottom: 14 }}><Wallet size={15} style={{ color: "var(--gold)" }} />Transferí a este alias</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
+              <div><div className="nop-mini">Alias</div><b style={{ fontSize: 15 }}>{PAY_ALIAS}</b></div>
+              <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => copy(PAY_ALIAS)}><Copy size={13} />Copiar</button>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "10px 0" }}>
+              <div><div className="nop-mini">Nombre / referencia</div><b style={{ fontSize: 15 }}>{PAY_NAME}</b></div>
+              <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => copy(PAY_NAME)}><Copy size={13} />Copiar</button>
+            </div>
+            <div className="nop-mini" style={{ marginTop: 12 }}>Monto a transferir: <b style={{ color: "var(--gold)" }}>{fmtARS(price)}</b> (aprox., se confirma según tu MMR).</div>
+          </div>
+        ) : (
+          <div className="nop-card" style={{ padding: 18, background: "var(--bg2)", marginBottom: 18 }}>
+            <div className="nop-panel-h" style={{ marginBottom: 12 }}><Wallet size={15} style={{ color: "var(--violet)" }} />Pagá con PayPal</div>
+            <p className="nop-mini" style={{ marginBottom: 14 }}>Abrí el link, hacé el pago y descargá el comprobante para subirlo abajo.</p>
+            <a className="nop-btn nop-btn-violet" href={PAYPAL_URL} target="_blank" rel="noreferrer"><ArrowRight size={15} />Ir a PayPal</a>
+          </div>
+        )}
+
+        <label style={{ fontSize: 12, fontWeight: 600, color: "var(--mut)", display: "block", margin: "4px 0 10px" }}>5 · Subí el comprobante <span className="req">*</span></label>
+        <label className="nop-upload">
+          <input type="file" accept="image/*,application/pdf" style={{ display: "none" }} onChange={(e) => setFile(e.target.files?.[0] || null)} />
+          <Upload size={20} style={{ color: file ? "var(--grn)" : "var(--mut)" }} />
+          <span>{file ? file.name : "Tocá para elegir una imagen o PDF del comprobante"}</span>
+        </label>
+        {!file && <p className="nop-mini" style={{ marginTop: 8 }}>Sin comprobante no podés enviar el pedido.</p>}
+
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 20 }}>
+          <button className="nop-btn nop-btn-ghost" onClick={() => setStep(1)}>← Volver</button>
+          <button className="nop-btn nop-btn-gold" disabled={busy || !file} onClick={submit}><Check size={15} />{busy ? "Enviando…" : "Enviar pedido"}</button>
+        </div>
+      </>}
+    </div>
+  </>;
+}
+
+/* ===================== CUENTAS (pool compartido) ===================== */
+function AccStatusBadge({ s }) {
+  const cls = s === "activa" ? "s-completed" : s === "inactiva" ? "s-in_progress" : "s-cancelled";
+  return <span className={"nop-status " + cls}>{ACC_STATUS_LABEL[s] || s}</span>;
+}
+function Cred({ label, value, flash }) {
+  const [show, setShow] = useState(false);
+  const copy = () => { try { navigator.clipboard.writeText(value || ""); flash && flash("Copiado"); } catch (e) {} };
+  return <div className="nop-cred"><span className="nop-mini">{label}</span>
+    <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+      <code>{show ? (value || "—") : "••••••••"}</code>
+      <button className="nop-iconbtn" style={{ width: 28, height: 28 }} onClick={() => setShow((s) => !s)}>{show ? <EyeOff size={13} /> : <Eye size={13} />}</button>
+      <button className="nop-iconbtn" style={{ width: 28, height: 28 }} onClick={copy}><Copy size={13} /></button>
+    </span></div>;
+}
+
+function AdminAccounts({ accounts, reload, flash }) {
+  const [summoner, setSummoner] = useState("");
+  const [rk, setRk] = useState("Oro"), [rd, setRd] = useState("IV");
+  const [user, setUser] = useState(""), [pass, setPass] = useState("");
+  const [estado, setEstado] = useState("activa");
+  const [edit, setEdit] = useState(null);
+
+  const rankStr = (r, d) => r + (r !== "Master" ? " " + d : "");
+  const create = async () => {
+    if (!summoner) { flash("Falta el nombre de invocador."); return; }
+    const { error } = await supabase.from("game_accounts").insert({ summoner, rank: rankStr(rk, rd), login_user: user, login_pass: pass, status: estado });
+    if (error) { flash("No se pudo crear la cuenta."); return; }
+    setSummoner(""); setUser(""); setPass(""); setEstado("activa");
+    await reload(); flash("Cuenta creada");
+  };
+  const setStatus = async (a, status) => { await supabase.from("game_accounts").update({ status }).eq("id", a.id); await reload(); flash(`Cuenta ${ACC_STATUS_LABEL[status]?.toLowerCase()}`); };
+  const del = async (a) => { if (!window.confirm(`¿Eliminar la cuenta ${a.summoner}?`)) return; await supabase.from("game_accounts").delete().eq("id", a.id); await reload(); flash("Cuenta eliminada"); };
+
+  return <>
+    <div className="nop-sectionhead"><div><h1 className="nop-h1">Cuentas</h1><p className="nop-sub">Pool de cuentas para los boosters. Crealas, actualizalas o deshabilitalas.</p></div></div>
+
+    <div className="nop-card nop-panel" style={{ marginBottom: 16 }}>
+      <div className="nop-panel-h"><PlusIc size={15} style={{ color: "var(--cyan)" }} />Nueva cuenta</div>
       <div className="nop-row3">
-        <div className="nop-field"><label>Servidor <span className="req">*</span></label><select className="nop-select" value={server} onChange={(e) => setServer(e.target.value)}><option>LAS</option><option>LAN</option><option>BR</option></select></div>
-        {!isCoaching && <div className="nop-field"><label>Ganancia LP aprox</label><select className="nop-select" value={lp} onChange={(e) => setLp(e.target.value)}><option>+15</option><option>+20</option><option>+25</option></select></div>}
-        <div className="nop-field"><label>Medio de pago <span className="req">*</span></label><select className="nop-select" value={payment} onChange={(e) => setPayment(e.target.value)}><option>Transferencia (pesos)</option><option>PayPal (usd)</option><option>Mercado Pago</option></select></div>
+        <div className="nop-field" style={{ marginBottom: 12 }}><label>Nombre de invocador <span className="req">*</span></label>
+          <input className="nop-input" value={summoner} onChange={(e) => setSummoner(e.target.value)} placeholder="Ej: SmurfNation01" /></div>
+        <div className="nop-field" style={{ marginBottom: 12 }}><label>Liga actual</label>
+          <div className="nop-row2">
+            <select className="nop-select" value={rk} onChange={(e) => setRk(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
+            <select className="nop-select" value={rd} onChange={(e) => setRd(e.target.value)} disabled={rk === "Master"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select>
+          </div></div>
+        <div className="nop-field" style={{ marginBottom: 12 }}><label>Estado</label>
+          <select className="nop-select" value={estado} onChange={(e) => setEstado(e.target.value)}><option value="activa">Disponible</option><option value="deshabilitada">Deshabilitada</option></select></div>
       </div>
-      <div className="nop-field"><label>Rol / campeón preferido</label><input className="nop-input" value={roleChamp} onChange={(e) => setRoleChamp(e.target.value)} placeholder="Ej: ADC, Mid Katarina, Flash en D" /></div>
-      <div className="nop-field"><label>Notas para el booster</label><textarea className="nop-ta" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Horarios, preferencias, lo que quieras aclarar…" /></div>
-
-      <div className="nop-card" style={{ padding: 16, background: "var(--bg2)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 14 }}>
-        <div><div className="nop-mini">Precio estimado {service === "combo" && "(incluye coaching en vivo +50%)"}</div>
-          <div className="nop-display" style={{ fontSize: 26, fontWeight: 700, color: "var(--gold)" }}>{fmtARS(price)}</div>
-          <div className="nop-mini">Lo confirma el equipo según tu MMR. El pago se gestiona aparte.</div></div>
-        <button className="nop-btn nop-btn-gold" disabled={busy} onClick={submit}><Plus size={15} />{busy ? "Enviando…" : "Enviar pedido"}</button>
+      <div className="nop-row3">
+        <div className="nop-field" style={{ marginBottom: 0 }}><label>Usuario (oculto)</label>
+          <input className="nop-input" value={user} onChange={(e) => setUser(e.target.value)} placeholder="usuario de login" /></div>
+        <div className="nop-field" style={{ marginBottom: 0 }}><label>Contraseña (oculta)</label>
+          <input className="nop-input" value={pass} onChange={(e) => setPass(e.target.value)} placeholder="contraseña" /></div>
+        <div style={{ display: "flex", alignItems: "flex-end" }}>
+          <button className="nop-btn nop-btn-cyan" style={{ width: "100%" }} onClick={create}><PlusIc size={15} />Crear cuenta</button></div>
       </div>
     </div>
+
+    {accounts.length === 0 ? <Empty icon={Gamepad2} title="Sin cuentas todavía" sub="Creá la primera arriba." /> :
+      <div className="nop-acc-grid">{accounts.map((a) => (
+        <div className="nop-card nop-acc" key={a.id}>
+          <div className="top">
+            <div><div className="sm">{a.summoner}</div><div className="nop-mini">{a.rank || "—"}</div></div>
+            <AccStatusBadge s={a.status} />
+          </div>
+          {a.status === "inactiva" && <div className="nop-mini">En uso por <b style={{ color: "var(--tx)" }}>{a.taken_by_name || "—"}</b></div>}
+          <Cred label="Usuario" value={a.login_user} flash={flash} />
+          <Cred label="Contraseña" value={a.login_pass} flash={flash} />
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setEdit(a)}>Editar</button>
+            {a.status !== "deshabilitada"
+              ? <button className="nop-btn nop-btn-ghost nop-btn-sm" disabled={a.status === "inactiva"} onClick={() => setStatus(a, "deshabilitada")}><Power size={13} />Deshabilitar</button>
+              : <button className="nop-btn nop-btn-cyan nop-btn-sm" onClick={() => setStatus(a, "activa")}><Power size={13} />Activar</button>}
+            <button className="nop-btn nop-btn-danger nop-btn-sm" onClick={() => del(a)}><Trash2 size={13} /></button>
+          </div>
+        </div>))}</div>}
+
+    {edit && <AccountEdit a={edit} onClose={() => setEdit(null)} reload={reload} flash={flash} />}
+  </>;
+}
+
+function AccountEdit({ a, onClose, reload, flash }) {
+  const init = (a.rank || "Oro IV").split(" ");
+  const [summoner, setSummoner] = useState(a.summoner || "");
+  const [rk, setRk] = useState(RANKS.includes(init[0]) ? init[0] : "Oro");
+  const [rd, setRd] = useState(init[1] || "IV");
+  const [user, setUser] = useState(a.login_user || "");
+  const [pass, setPass] = useState(a.login_pass || "");
+  const save = async () => {
+    const rank = rk + (rk !== "Master" ? " " + rd : "");
+    await supabase.from("game_accounts").update({ summoner, rank, login_user: user, login_pass: pass }).eq("id", a.id);
+    await reload(); flash("Cuenta actualizada"); onClose();
+  };
+  return <div className="nop-modal" onClick={onClose}><div className="nop-card nop-modalbox" style={{ maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
+    <div className="hd"><h3>Editar cuenta</h3><button className="nop-iconbtn" onClick={onClose}><X size={16} /></button></div>
+    <div className="bd">
+      <div className="nop-field"><label>Nombre de invocador</label><input className="nop-input" value={summoner} onChange={(e) => setSummoner(e.target.value)} /></div>
+      <div className="nop-field"><label>Liga actual</label><div className="nop-row2">
+        <select className="nop-select" value={rk} onChange={(e) => setRk(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
+        <select className="nop-select" value={rd} onChange={(e) => setRd(e.target.value)} disabled={rk === "Master"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select></div></div>
+      <div className="nop-field"><label>Usuario</label><input className="nop-input" value={user} onChange={(e) => setUser(e.target.value)} /></div>
+      <div className="nop-field"><label>Contraseña</label><input className="nop-input" value={pass} onChange={(e) => setPass(e.target.value)} /></div>
+      <button className="nop-btn nop-btn-gold" style={{ width: "100%" }} onClick={save}><Check size={15} />Guardar cambios</button>
+    </div>
+  </div></div>;
+}
+
+function BoosterAccounts({ profile, accounts, reload, flash }) {
+  const disponibles = accounts.filter((a) => a.status === "activa");
+  const mias = accounts.filter((a) => a.status === "inactiva" && a.taken_by === profile.id);
+
+  const use = async (a) => {
+    const { data, error } = await supabase.from("game_accounts")
+      .update({ status: "inactiva", taken_by: profile.id, taken_by_name: profile.full_name }).eq("id", a.id).eq("status", "activa").select();
+    if (error) { flash("No se pudo tomar la cuenta."); return; }
+    if (!data || data.length === 0) { flash("Otro booster la tomó primero."); await reload(); return; }
+    await reload(); flash(`Tomaste la cuenta ${a.summoner}`);
+  };
+  const ret = async (a) => {
+    await supabase.from("game_accounts").update({ status: "activa", taken_by: null, taken_by_name: null }).eq("id", a.id);
+    await reload(); flash(`Devolviste la cuenta ${a.summoner}`);
+  };
+
+  return <>
+    <div className="nop-sectionhead"><div><h1 className="nop-h1">Cuentas</h1><p className="nop-sub">Tomá una cuenta disponible para trabajar y devolvela al terminar.</p></div></div>
+
+    {mias.length > 0 && <div style={{ marginBottom: 20 }}>
+      <div className="nop-panel-h" style={{ marginBottom: 12 }}><Gamepad2 size={15} style={{ color: "var(--violet)" }} />Mis cuentas en uso ({mias.length})</div>
+      <div className="nop-acc-grid">{mias.map((a) => (
+        <div className="nop-card nop-acc" key={a.id} style={{ borderColor: "var(--violet)" }}>
+          <div className="top"><div><div className="sm">{a.summoner}</div><div className="nop-mini">{a.rank || "—"}</div></div><AccStatusBadge s={a.status} /></div>
+          <Cred label="Usuario" value={a.login_user} flash={flash} />
+          <Cred label="Contraseña" value={a.login_pass} flash={flash} />
+          <button className="nop-btn nop-btn-grn nop-btn-sm" onClick={() => ret(a)}><ArrowRight size={13} style={{ transform: "rotate(180deg)" }} />Devolver cuenta</button>
+        </div>))}</div>
+    </div>}
+
+    <div className="nop-panel-h" style={{ marginBottom: 12 }}><Zap size={15} style={{ color: "var(--gold)" }} />Disponibles ({disponibles.length})</div>
+    {disponibles.length === 0 ? <Empty icon={Gamepad2} title="No hay cuentas disponibles" sub="Cuando el admin cargue cuentas, aparecen acá." /> :
+      <div className="nop-acc-grid">{disponibles.map((a) => (
+        <div className="nop-card nop-acc" key={a.id}>
+          <div className="top"><div><div className="sm">{a.summoner}</div><div className="nop-mini">{a.rank || "—"}</div></div><AccStatusBadge s={a.status} /></div>
+          <Cred label="Usuario" value={a.login_user} flash={flash} />
+          <Cred label="Contraseña" value={a.login_pass} flash={flash} />
+          <button className="nop-btn nop-btn-cyan nop-btn-sm" onClick={() => use(a)}><Check size={13} />Usar esta cuenta</button>
+        </div>))}</div>}
   </>;
 }
