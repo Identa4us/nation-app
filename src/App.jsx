@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from "react"
 import {
   Shield, Swords, GraduationCap, Sparkles, Bell, LogOut, Plus, Check, Clock, Play,
   Flag, Star, Users, TrendingUp, Wallet, Activity, ChevronRight, Trophy, MessageCircle,
-  Search, X, ArrowRight, Crown, Zap, Hash, UserCheck, ShieldCheck,
+  Search, X, ArrowRight, Crown, Zap, Hash, UserCheck, ShieldCheck, Trash2, Send,
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import { supabase } from "./supabaseClient";
@@ -72,6 +72,8 @@ export default function App() {
   const [drawer, setDrawer] = useState(false);
   const [toast, setToast] = useState("");
   const [recovery, setRecovery] = useState(false);
+  const [focusOrder, setFocusOrder] = useState(null);
+  const [lastSeen, setLastSeen] = useState(0);
   const flash = (m) => { setToast(m); setTimeout(() => setToast(""), 2600); };
   const reloadRef = useRef(() => {});
 
@@ -92,7 +94,10 @@ export default function App() {
       const { data } = await supabase.from("profiles").select("*").eq("id", session.user.id).single();
       setProfile(data);
       setBooting(false);
-      if (data) setTab(data.role === "admin" ? "validate" : data.role === "booster" ? "board" : "home");
+      if (data) {
+        try { setLastSeen(Number(localStorage.getItem("nop_lastseen_" + data.id)) || 0); } catch (e) {}
+        setTab(data.role === "admin" ? "validate" : data.role === "booster" ? "board" : "home");
+      }
     })();
   }, [session]);
 
@@ -122,8 +127,16 @@ export default function App() {
     return () => { supabase.removeChannel(ch); };
   }, [profile]);
 
-  const notify = async (text, recipient_role = null, recipient_id = null, icon = "bell") => {
-    await supabase.from("notifications").insert({ text, recipient_role, recipient_id, icon });
+  const notify = async (text, recipient_role = null, recipient_id = null, icon = "bell", link_type = null, link_id = null) => {
+    await supabase.from("notifications").insert({ text, recipient_role, recipient_id, icon, link_type, link_id: link_id != null ? String(link_id) : null });
+  };
+
+  const deleteOrder = async (o) => {
+    if (!window.confirm(`¿Eliminar el pedido #${o.id} de ${o.client_name}? Esta acción no se puede deshacer.`)) return;
+    const { error } = await supabase.from("orders").delete().eq("id", o.id);
+    if (error) { flash("No se pudo eliminar (¿permiso? revisá la política SQL)."); return; }
+    setFocusOrder(null);
+    await reload(); flash(`Pedido #${o.id} eliminado`);
   };
 
   const logout = async () => { await supabase.auth.signOut(); setProfile(null); setOrders([]); setNotifs([]); setProfiles([]); setTab(""); };
@@ -139,8 +152,32 @@ export default function App() {
   }
   if (profile.status === "disabled") return <Gate logout={logout} title="Cuenta deshabilitada" sub="Tu acceso fue suspendido. Contactá al administrador." />;
 
-  const ctx = { profile, orders, profiles, reload, flash, notify };
-  const myNotifs = notifs;
+  const seenKey = "nop_lastseen_" + profile.id;
+  const markSeen = () => {
+    const t = Date.now();
+    setLastSeen(t);
+    try { localStorage.setItem(seenKey, String(t)); } catch (e) {}
+  };
+  const unread = notifs.filter((n) => new Date(n.created_at).getTime() > lastSeen).length;
+
+  const openDrawer = () => { setDrawer(true); };
+  const closeDrawer = () => { setDrawer(false); markSeen(); };
+
+  const handleNotif = (n) => {
+    setDrawer(false); markSeen();
+    if (n.link_type === "order" && n.link_id) {
+      const ord = orders.find((o) => String(o.id) === String(n.link_id));
+      if (profile.role === "admin") { setTab(ord && ord.status === "pending" ? "validate" : "orders"); if (ord) setFocusOrder(ord); }
+      else if (profile.role === "booster") { setTab(ord && ord.status === "available" ? "board" : "mine"); }
+      else { setTab("home"); }
+    } else if (n.link_type === "validate") {
+      if (profile.role === "admin") setTab("validate");
+    } else if (n.link_type === "client" && n.link_id) {
+      if (profile.role === "admin") setTab("clients");
+    }
+  };
+
+  const ctx = { profile, orders, profiles, reload, flash, notify, deleteOrder };
   const avatarColor = profile.role === "admin" ? "var(--gold)" : profile.role === "booster" ? "var(--cyan)" : "var(--violet)";
 
   return (
@@ -150,7 +187,7 @@ export default function App() {
           <div className="nop-logo"><div className="nop-logo-mark"><Crown size={19} /></div><div><b>NATION</b><span>OPS PANEL</span></div></div>
           <div className="nop-spacer" />
           <span className="nop-roletag">{profile.role === "admin" ? "Admin" : profile.role === "booster" ? "Booster" : "Cliente"}</span>
-          <button className="nop-iconbtn" onClick={() => setDrawer(true)}><Bell size={17} />{myNotifs.length > 0 && <span className="nop-dot">{myNotifs.length > 9 ? "9+" : myNotifs.length}</span>}</button>
+          <button className="nop-iconbtn" onClick={openDrawer}><Bell size={17} />{unread > 0 && <span className="nop-dot">{unread > 9 ? "9+" : unread}</span>}</button>
           <div className="nop-userchip"><span className="nm">{profile.full_name || profile.email}</span>
             <span className="nop-avatar" style={{ background: avatarColor }}>{(profile.full_name || "?")[0]?.toUpperCase()}</span></div>
           <button className="nop-iconbtn" onClick={logout} title="Salir"><LogOut size={16} /></button>
@@ -164,7 +201,8 @@ export default function App() {
         {profile.role === "cliente" && <ClientViews tab={tab} setTab={setTab} {...ctx} />}
       </div></div>
 
-      {drawer && <Drawer notifs={myNotifs} onClose={() => setDrawer(false)} />}
+      {drawer && <Drawer notifs={notifs} lastSeen={lastSeen} onClose={closeDrawer} onClick={handleNotif} onMarkAll={markSeen} />}
+      {focusOrder && <OrderModal o={focusOrder} onClose={() => setFocusOrder(null)} onDelete={profile.role === "admin" ? deleteOrder : null} />}
       {toast && <div className="nop-toast"><Check size={16} style={{ color: "var(--grn)" }} />{toast}</div>}
     </>
   );
@@ -208,6 +246,10 @@ function Auth() {
           options: { data: { full_name: fullName, role, discord } },
         });
         if (error) throw error;
+        if (role === "booster") {
+          // aviso al admin (best-effort: requiere sesión activa, i.e. confirmación de email desactivada)
+          try { await supabase.from("notifications").insert({ text: `Nuevo booster registrado: ${fullName}. Aprobalo o rechazalo en Validaciones.`, recipient_role: "admin", icon: "user", link_type: "validate" }); } catch (e) {}
+        }
         if (!data.session) { setOk("Cuenta creada. Ya podés iniciar sesión."); setMode("login"); }
         else if (role === "booster") setOk("Cuenta creada. Un administrador tiene que aprobarte antes de tomar trabajos.");
       } else if (mode === "recover") {
@@ -345,18 +387,28 @@ function Tabs({ role, tab, setTab, orders, profiles }) {
 }
 
 /* ===================== DRAWER ===================== */
-function Drawer({ notifs, onClose }) {
+function Drawer({ notifs, lastSeen, onClose, onClick, onMarkAll }) {
   const map = { bell: [Bell, "var(--gold)"], new: [Plus, "var(--cyan)"], done: [Check, "var(--grn)"], spark: [Sparkles, "var(--violet)"], user: [UserCheck, "var(--cyan)"] };
+  const hasUnread = notifs.some((n) => new Date(n.created_at).getTime() > lastSeen);
   return <div className="nop-drawer" onClick={onClose}><div className="nop-drawer-bg" />
     <div className="nop-drawer-panel" onClick={(e) => e.stopPropagation()}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "18px 16px", borderBottom: "1px solid var(--line)" }}>
         <div className="nop-panel-h" style={{ margin: 0 }}><Bell size={16} style={{ color: "var(--gold)" }} />Notificaciones</div>
-        <button className="nop-iconbtn" onClick={onClose}><X size={16} /></button>
+        <div style={{ display: "flex", gap: 8 }}>
+          {hasUnread && <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={onMarkAll}><Check size={13} />Marcar leídas</button>}
+          <button className="nop-iconbtn" onClick={onClose}><X size={16} /></button>
+        </div>
       </div>
       {notifs.length === 0 ? <div className="nop-empty" style={{ padding: "40px 20px" }}><div className="ic"><Bell size={22} /></div><p>Sin novedades.</p></div>
-        : notifs.map((n) => { const [Ic, c] = map[n.icon] || map.bell; return (
-          <div className="nop-notif" key={n.id}><div className="ic" style={{ background: c + "1f", color: c }}><Ic size={15} /></div>
-            <div><div className="tx">{n.text}</div><div className="tm">{timeAgo(n.created_at)}</div></div></div>); })}
+        : notifs.map((n) => { const [Ic, c] = map[n.icon] || map.bell; const isNew = new Date(n.created_at).getTime() > lastSeen; const clickable = !!n.link_type;
+          return (
+            <div className={"nop-notif" + (clickable ? " nop-notif-click" : "")} key={n.id}
+              onClick={clickable ? () => onClick(n) : undefined} style={{ background: isNew ? "rgba(232,179,73,.05)" : undefined }}>
+              <div className="ic" style={{ background: c + "1f", color: c }}><Ic size={15} /></div>
+              <div style={{ flex: 1 }}><div className="tx">{n.text}</div>
+                <div className="tm">{timeAgo(n.created_at)}{clickable ? " · tocá para ver" : ""}</div></div>
+              {isNew && <span style={{ width: 8, height: 8, borderRadius: 99, background: "var(--gold)", alignSelf: "center", flexShrink: 0 }} />}
+            </div>); })}
     </div></div>;
 }
 
@@ -376,8 +428,34 @@ function AdminValidate({ orders, profiles, reload, flash, notify }) {
 
   const validateOrder = async (o) => {
     await supabase.from("orders").update({ status: "available" }).eq("id", o.id);
-    await notify(`🆕 Nuevo cliente disponible: ${o.client_name} — ${SERVICES[o.service].label}.`, "booster", null, "new");
+    await notify(`🆕 Nuevo cliente disponible: ${o.client_name} — ${SERVICES[o.service].label}.`, "booster", null, "new", "order", o.id);
     await reload(); flash(`Pedido #${o.id} validado y publicado`);
+  };
+  const rankText = (o) => {
+    const f = `${o.cur_rank}${o.cur_rank !== "Master" ? " " + o.cur_div : ""}`;
+    if (o.service === "coaching") return f;
+    return `${f} → ${o.tgt_rank}${o.tgt_rank !== "Master" ? " " + o.tgt_div : ""}`;
+  };
+  const waMessage = (o) => {
+    const link = window.location.origin;
+    const cuts = profiles.filter((p) => p.role === "booster" && p.status === "active").map((p) => Number(p.cut));
+    const baseCut = cuts.length ? Math.min(...cuts) : 0.5;
+    const pay = Math.round(Number(o.price) * baseCut);
+    return [
+      "🔔 *NUEVA CUENTA DISPONIBLE* — Eloboost Nation", "",
+      `🎮 *Servicio:* ${SERVICES[o.service].label}`,
+      `📈 *Rango:* ${rankText(o)}`,
+      `🌎 *Servidor:* ${o.server || "-"}`,
+      `💰 *Pago:* desde ${fmtARS(pay)}`, "",
+      "👉 Entrá a la app y tomalo antes que otro:", link,
+    ].join("\n");
+  };
+  const shareWhatsApp = (o) => {
+    window.open("https://wa.me/?text=" + encodeURIComponent(waMessage(o)), "_blank");
+  };
+  const validateAndShare = (o) => {
+    shareWhatsApp(o);   // se abre primero (dentro del click) para que el navegador no lo bloquee
+    validateOrder(o);
   };
   const acceptBooster = async (p, cut) => {
     await supabase.from("profiles").update({ status: "active", cut }).eq("id", p.id);
@@ -408,9 +486,10 @@ function AdminValidate({ orders, profiles, reload, flash, notify }) {
               <b style={{ color: "var(--mut)" }}>#{o.id}</b><SvcTag s={o.service} /><RankPath o={o} />
               <div><b style={{ fontSize: 13 }}>{o.client_name}</b><div className="nop-mini">{o.client_discord} · {o.server} · {o.payment}</div></div>
             </div>
-            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
               <b className="nop-display" style={{ color: "var(--gold)" }}>{fmtARS(o.price)}</b>
-              <button className="nop-btn nop-btn-grn nop-btn-sm" onClick={() => validateOrder(o)}><Check size={14} />Validar y publicar</button>
+              <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => validateOrder(o)}><Check size={14} />Validar</button>
+              <button className="nop-btn nop-btn-wa nop-btn-sm" onClick={() => validateAndShare(o)}><Send size={14} />Validar y avisar</button>
             </div>
           </div>))}</div>}
     </div>
@@ -573,7 +652,7 @@ function AdminDash({ orders, profiles }) {
   </>;
 }
 
-function AdminOrders({ orders, reload, flash }) {
+function AdminOrders({ orders, reload, flash, deleteOrder }) {
   const [f, setF] = useState("todos");
   const [q, setQ] = useState("");
   let list = orders;
@@ -591,7 +670,7 @@ function AdminOrders({ orders, reload, flash }) {
     </div>
     <div className="nop-card nop-panel">
       {list.length === 0 ? <Empty icon={Hash} title="Sin resultados" sub="Probá con otro filtro." />
-        : <OrdersTable orders={list} cols={["id", "cliente", "rank", "servicio", "booster", "precio", "pago", "ganancia", "estado"]} />}
+        : <OrdersTable orders={list} onDelete={deleteOrder} cols={["id", "cliente", "rank", "servicio", "booster", "precio", "pago", "ganancia", "estado"]} />}
     </div>
   </>;
 }
@@ -628,19 +707,19 @@ function AdminBoosters({ orders, profiles, reload, flash }) {
   </>;
 }
 
-function AdminHistory({ orders }) {
+function AdminHistory({ orders, deleteOrder }) {
   const done = orders.filter((o) => o.status === "completed");
   return <>
     <div className="nop-sectionhead"><div><h1 className="nop-h1">Historial</h1><p className="nop-sub">Servicios finalizados y reseñas.</p></div></div>
     <div className="nop-card nop-panel">
       {done.length === 0 ? <Empty icon={Trophy} title="Todavía no hay cierres" sub="Aparecen acá cuando un booster finaliza." />
-        : <OrdersTable orders={done} cols={["id", "cliente", "rank", "servicio", "booster", "precio", "ganancia", "rating"]} />}
+        : <OrdersTable orders={done} onDelete={deleteOrder} cols={["id", "cliente", "rank", "servicio", "booster", "precio", "ganancia", "rating"]} />}
     </div>
   </>;
 }
 
 /* ===== tabla compartida ===== */
-function OrdersTable({ orders, cols }) {
+function OrdersTable({ orders, cols, onDelete }) {
   const [open, setOpen] = useState(null);
   const head = { id: "#", cliente: "Cliente", rank: "Recorrido", servicio: "Servicio", booster: "Booster", precio: "Precio", pago: "Pago booster", ganancia: "Ganancia", estado: "Estado", rating: "Reseña" };
   return <>
@@ -648,7 +727,7 @@ function OrdersTable({ orders, cols }) {
       <thead><tr>{cols.map((c) => <th key={c}>{head[c]}</th>)}</tr></thead>
       <tbody>{orders.map((o) => <tr key={o.id} style={{ cursor: "pointer" }} onClick={() => setOpen(o)}>{cols.map((c) => <td key={c}>{cell(c, o)}</td>)}</tr>)}</tbody>
     </table></div>
-    {open && <OrderModal o={open} onClose={() => setOpen(null)} />}
+    {open && <OrderModal o={open} onClose={() => setOpen(null)} onDelete={onDelete} />}
   </>;
 }
 function cell(c, o) {
@@ -666,7 +745,7 @@ function cell(c, o) {
     default: return null;
   }
 }
-function OrderModal({ o, onClose }) {
+function OrderModal({ o, onClose, onDelete }) {
   const F = ({ k, v }) => <div style={{ display: "flex", justifyContent: "space-between", gap: 16, padding: "9px 0", borderBottom: "1px solid var(--line)" }}><span className="nop-mini" style={{ flexShrink: 0 }}>{k}</span><span style={{ fontSize: 13, textAlign: "right" }}>{v}</span></div>;
   const S = ({ k, v, c }) => <div className="nop-card" style={{ padding: "12px 8px", background: "var(--bg2)" }}><div className="nop-mini">{k}</div><div className="nop-display" style={{ fontSize: 16, fontWeight: 700, color: c, marginTop: 4 }}>{v}</div></div>;
   return <div className="nop-modal" onClick={onClose}><div className="nop-card nop-modalbox" onClick={(e) => e.stopPropagation()}>
@@ -686,6 +765,7 @@ function OrderModal({ o, onClose }) {
       {o.survey_rating && <div className="nop-card" style={{ padding: 14, background: "var(--bg2)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><b style={{ fontSize: 13 }}>Reseña del cliente</b><Stars value={o.survey_rating} /></div>
         <p style={{ fontSize: 13, color: "var(--mut)", fontStyle: "italic" }}>"{o.survey_comment}"</p></div>}
+      {onDelete && <button className="nop-btn nop-btn-danger" style={{ width: "100%", marginTop: 16 }} onClick={() => onDelete(o)}><Trash2 size={15} />Eliminar pedido</button>}
     </div></div></div>;
 }
 
@@ -704,8 +784,8 @@ function BoosterBoard({ profile, orders, reload, flash, notify }) {
       .eq("id", o.id).eq("status", "available").select();
     if (error) { flash("No se pudo aceptar. Reintentá."); return; }
     if (!data || data.length === 0) { flash("Otro booster lo tomó primero."); await reload(); return; }
-    await notify(`${profile.full_name} aceptó el pedido #${o.id} (${o.client_name}).`, "admin", null, "done");
-    await notify(`¡Tenés booster! ${profile.full_name} tomó tu servicio. Coordinen por Discord.`, null, o.client_id, "done");
+    await notify(`${profile.full_name} aceptó el pedido #${o.id} (${o.client_name}).`, "admin", null, "done", "order", o.id);
+    await notify(`¡Tenés booster! ${profile.full_name} tomó tu servicio. Coordinen por Discord.`, null, o.client_id, "done", "order", o.id);
     await reload(); flash(`Aceptaste el pedido #${o.id}`);
   };
   return <>
@@ -728,8 +808,8 @@ function BoosterMine({ profile, orders, reload, flash, notify }) {
   const mine = orders.filter((o) => o.booster_id === profile.id && o.status === "in_progress");
   const finish = async (o) => {
     await supabase.from("orders").update({ status: "completed", completed_at: new Date().toISOString() }).eq("id", o.id);
-    await notify(`Servicio #${o.id} finalizado por ${profile.full_name}.`, "admin", null, "done");
-    await notify(`Tu servicio #${o.id} fue finalizado. ¡Dejanos tu reseña!`, null, o.client_id, "done");
+    await notify(`Servicio #${o.id} finalizado por ${profile.full_name}.`, "admin", null, "done", "order", o.id);
+    await notify(`Tu servicio #${o.id} fue finalizado. ¡Dejanos tu reseña!`, null, o.client_id, "done", "order", o.id);
     await reload(); flash(`Servicio #${o.id} finalizado`);
   };
   return <>
@@ -794,7 +874,7 @@ function ClientOrderCard({ o, reload, flash, notify }) {
   const stepIdx = STATUS_FLOW.indexOf(o.status);
   const submit = async () => {
     await supabase.from("orders").update({ survey_rating: rating, survey_comment: comment || "¡Todo excelente!", survey_recommend: rec }).eq("id", o.id);
-    await notify(`${o.client_name} dejó una reseña de ${rating}★ en el pedido #${o.id}.`, "admin", null, "spark");
+    await notify(`${o.client_name} dejó una reseña de ${rating}★ en el pedido #${o.id}.`, "admin", null, "spark", "order", o.id);
     await reload(); flash("¡Gracias por tu reseña!");
   };
   return <div className="nop-card nop-panel">
@@ -844,10 +924,10 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
       role_champ: isCoaching ? `${roleChamp || "Sin preferencia"} · ${games} partida${games > 1 ? "s" : ""}` : roleChamp,
       notes, payment, price, status: "pending",
     };
-    const { error } = await supabase.from("orders").insert(row);
+    const { data: created, error } = await supabase.from("orders").insert(row).select("id").single();
     setBusy(false);
     if (error) { flash("No se pudo crear el pedido."); return; }
-    await notify(`Nuevo pedido de ${profile.full_name} entró por validar.`, "admin", null, "new");
+    await notify(`Nuevo pedido de ${profile.full_name} entró por validar.`, "admin", null, "new", "order", created?.id);
     await reload(); flash("¡Pedido enviado! Lo validamos y pasa a los boosters."); setTab("home");
   };
   const SvcIc = ({ k }) => { const Ic = SERVICES[k].icon; return <Ic size={19} />; };

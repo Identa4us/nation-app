@@ -81,6 +81,10 @@ table.nop-t{width:100%;border-collapse:collapse;font-size:13px}
 .nop-btn-grn{background:var(--grn);color:#06281c}
 .nop-btn-violet{background:var(--violet);color:#fff}
 .nop-btn-cyan{background:var(--cyan);color:#04293a}
+.nop-btn-danger{background:rgba(248,113,113,.14);color:var(--red);border:1px solid rgba(248,113,113,.35)}
+.nop-btn-danger:hover{background:rgba(248,113,113,.22)}
+.nop-btn-wa{background:#25D366;color:#04331c}
+.nop-btn-wa:hover{filter:brightness(1.06)}
 .nop-btn-sm{padding:8px 13px;font-size:12.5px;border-radius:9px}
 .nop-btn[disabled]{opacity:.45;cursor:not-allowed}
 
@@ -123,6 +127,8 @@ table.nop-t{width:100%;border-collapse:collapse;font-size:13px}
 .nop-notif .ic{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;flex-shrink:0}
 .nop-notif .tx{font-size:13px;line-height:1.45}
 .nop-notif .tm{font-size:11px;color:var(--mut2);margin-top:3px}
+.nop-notif-click{cursor:pointer;transition:.12s}
+.nop-notif-click:hover{background:var(--surf2) !important}
 
 .nop-auth{min-height:100vh;display:grid;place-items:center;padding:30px 20px;background:radial-gradient(1100px 520px at 50% -10%,rgba(168,85,247,.12),transparent),radial-gradient(900px 480px at 90% 110%,rgba(232,179,73,.08),transparent),var(--bg)}
 .nop-authbox{width:100%;max-width:430px}
