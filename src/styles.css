@@ -93,6 +93,10 @@ table.nop-t{width:100%;border-collapse:collapse;font-size:13px}
 .nop-acc .sm{font-family:'Chakra Petch';font-weight:700;font-size:15px}
 .nop-cred{display:flex;justify-content:space-between;align-items:center;gap:8px;background:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:8px 11px;font-size:13px}
 .nop-cred code{font-family:ui-monospace,monospace;color:var(--tx)}
+.nop-chiprow{display:flex;flex-wrap:wrap;gap:8px}
+.nop-chip{padding:8px 14px;border-radius:999px;border:1px solid var(--line2);background:var(--bg2);color:var(--mut);font-size:13px;font-weight:600;cursor:pointer;transition:.13s}
+.nop-chip:hover{border-color:var(--gold);color:var(--tx)}
+.nop-chip.on{background:var(--gold);color:#1a1206;border-color:var(--gold)}
 .nop-btn-sm{padding:8px 13px;font-size:12.5px;border-radius:9px}
 .nop-btn[disabled]{opacity:.45;cursor:not-allowed}
 
