@@ -101,6 +101,7 @@ table.nop-t{width:100%;border-collapse:collapse;font-size:13px}
 .nop-finflow{margin-top:14px;border-top:1px solid var(--line);padding-top:10px}
 .nop-finflow .row{display:flex;justify-content:space-between;gap:12px;padding:8px 0;font-size:13px;color:var(--mut)}
 .nop-finflow .row.total{border-top:1px solid var(--line);margin-top:4px;padding-top:12px;font-size:15px;font-weight:700;color:var(--tx)}
+.nop-acc-head{display:flex;align-items:center;justify-content:space-between;width:100%;background:none;border:none;cursor:pointer;padding:0;color:inherit}
 .nop-btn-sm{padding:8px 13px;font-size:12.5px;border-radius:9px}
 .nop-btn[disabled]{opacity:.45;cursor:not-allowed}
 

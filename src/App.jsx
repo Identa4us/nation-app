@@ -155,6 +155,24 @@ export default function App() {
 
   useEffect(() => { reload(); }, [reload]);
 
+  /* inactividad: tras 10 min sin interacción, volver a la pestaña principal y borrar el borrador del formulario */
+  useEffect(() => {
+    if (!profile) return;
+    let timer;
+    const home = profile.role === "admin" ? "validate" : profile.role === "booster" ? "board" : "home";
+    const reset = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        try { localStorage.removeItem("nop_draft_" + profile.id); } catch (e) {}
+        setTab(home);
+      }, 10 * 60 * 1000);
+    };
+    const evs = ["mousemove", "mousedown", "keydown", "touchstart", "scroll"];
+    evs.forEach((e) => window.addEventListener(e, reset, { passive: true }));
+    reset();
+    return () => { clearTimeout(timer); evs.forEach((e) => window.removeEventListener(e, reset)); };
+  }, [profile]);
+
   /* tiempo real */
   useEffect(() => {
     if (!profile) return;
@@ -879,6 +897,8 @@ function AdminFinance({ orders, flash }) {
   const [expenses, setExpenses] = useState([]);
   const [partners, setPartners] = useState([]);
   const [conversions, setConversions] = useState([]);
+  const [adjustments, setAdjustments] = useState([]);
+  const [showSettings, setShowSettings] = useState(false);
   const [paypalPct, setPaypalPct] = useState(3);
   const [tarjeta, setTarjeta] = useState("");
   const [openArs, setOpenArs] = useState("");
@@ -892,6 +912,8 @@ function AdminFinance({ orders, flash }) {
     setExpenses(ex || []);
     const { data: cv } = await supabase.from("fin_conversions").select("*").order("created_at", { ascending: false });
     setConversions(cv || []);
+    const { data: aj } = await supabase.from("fin_adjustments").select("*").order("created_at", { ascending: false });
+    setAdjustments(aj || []);
     const { data: cfg } = await supabase.from("fin_config").select("*").eq("id", 1).maybeSingle();
     setPartners((cfg?.partners) || [{ name: "Tomi", pct: 34 }, { name: "Collo", pct: 33 }, { name: "Nico", pct: 33 }]);
     setPaypalPct(cfg?.paypal_pct ?? 3);
@@ -941,25 +963,27 @@ function AdminFinance({ orders, flash }) {
   const allDone = completed;
   const convArsIn = conversions.reduce((a, c) => a + Number(c.ars_in || 0), 0);
   const convUsdOut = conversions.reduce((a, c) => a + Number(c.usd_out || 0), 0);
+  const adjArs = adjustments.filter((a) => (a.currency || "ars") === "ars").reduce((s, a) => s + Number(a.amount || 0), 0);
+  const adjUsd = adjustments.filter((a) => a.currency === "usd").reduce((s, a) => s + Number(a.amount || 0), 0);
   const saldoArs = Number(openArs || 0)
     + allDone.filter((o) => (o.currency || "ars") === "ars").reduce((a, o) => a + Number(o.price || 0), 0)
     - allDone.filter((o) => o.booster_paid && (o.booster_paid_ccy || "ars") === "ars").reduce((a, o) => a + Number(o.booster_pay || 0), 0)
     - expenses.reduce((a, e) => a + pesoOf(e), 0)
-    + convArsIn;
+    + convArsIn + adjArs;
   const saldoUsd = Number(openUsd || 0)
     + allDone.filter((o) => o.currency === "usd").reduce((a, o) => a + Number(o.usd_amount || 0) * (1 - pct), 0)
     - allDone.filter((o) => o.booster_paid && o.booster_paid_ccy === "usd").reduce((a, o) => a + Number(o.booster_paid_usd || 0), 0)
-    - convUsdOut;
+    - convUsdOut + adjUsd;
   const saldoUnificadoArs = saldoArs + (blue ? saldoUsd * blue : 0);
 
   // --- CIERRE USD -> PESOS ---
   const coUsdNum = Number(coUsd) || (saldoUsd > 0 ? Math.round(saldoUsd * 100) / 100 : 0);
   const coRateNum = Number(coRate) || Number(blue) || 0;
-  const coArsIn = Math.round(coUsdNum * (1 - pct) * coRateNum);
+  const coArsIn = Math.round(coUsdNum * coRateNum);
   const doCloseout = async () => {
     if (coUsdNum <= 0 || coRateNum <= 0) { flash("Cargá los dólares y el tipo de cambio."); return; }
     setBusy(true);
-    const { error } = await supabase.from("fin_conversions").insert({ usd_out: coUsdNum, fee_pct: Number(paypalPct || 0), rate: coRateNum, ars_in: coArsIn, month });
+    const { error } = await supabase.from("fin_conversions").insert({ usd_out: coUsdNum, fee_pct: 0, rate: coRateNum, ars_in: coArsIn, month });
     setBusy(false);
     if (error) { flash("No se pudo registrar el cierre."); return; }
     setCoUsd(""); setCoRate(""); await load(); flash(`Cierre registrado: ${fmtUSD(coUsdNum)} → ${fmtARS(coArsIn)}`);
@@ -972,6 +996,13 @@ function AdminFinance({ orders, flash }) {
     setBusy(false);
     flash(error ? "No se pudo guardar." : "Ajustes guardados.");
   };
+
+  const addAdjustment = async (amount, currency, note) => {
+    const { error } = await supabase.from("fin_adjustments").insert({ amount: Number(amount), currency, note: note || null });
+    if (error) { flash("No se pudo guardar el ajuste."); return; }
+    await load(); flash("Ajuste aplicado a la cuenta.");
+  };
+  const delAdjustment = async (id) => { await supabase.from("fin_adjustments").delete().eq("id", id); await load(); };
 
   const togglePaid = async (o, paid) => {
     let ccy = "ars", usd = null;
@@ -1032,7 +1063,7 @@ function AdminFinance({ orders, flash }) {
     {/* CIERRE USD -> PESOS */}
     <div className="nop-card nop-panel" style={{ marginBottom: 14 }}>
       <div className="nop-panel-h"><RefreshCw size={15} style={{ color: "var(--grn)" }} />Cierre de cuenta USD → pesos</div>
-      <p className="nop-mini" style={{ marginBottom: 12 }}>Una vez al mes, pasá los dólares de PayPal a pesos. Se descuenta la comisión del {paypalPct}% y se suma a la cuenta en pesos. Saldo USD actual: <b style={{ color: "var(--grn)" }}>{fmtUSD(saldoUsd)}</b>.</p>
+      <p className="nop-mini" style={{ marginBottom: 12 }}>Una vez al mes, pasá los dólares de PayPal a pesos. Se suma a la cuenta en pesos (la transferencia no tiene comisión). Saldo USD actual: <b style={{ color: "var(--grn)" }}>{fmtUSD(saldoUsd)}</b>.</p>
       <div className="nop-row2" style={{ alignItems: "end" }}>
         <div className="nop-field" style={{ marginBottom: 0 }}><label>Dólares a pasar</label>
           <input className="nop-input" type="number" value={coUsd} onChange={(e) => setCoUsd(e.target.value)} placeholder={saldoUsd > 0 ? String(Math.round(saldoUsd * 100) / 100) : "0"} /></div>
@@ -1040,7 +1071,7 @@ function AdminFinance({ orders, flash }) {
           <input className="nop-input" type="number" value={coRate} onChange={(e) => setCoRate(e.target.value)} placeholder={blue ? String(blue) : "blue"} /></div>
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12, flexWrap: "wrap", gap: 10 }}>
-        <span className="nop-mini">Recibís ≈ <b style={{ color: "var(--gold)" }}>{fmtARS(coArsIn)}</b> (después del {paypalPct}%)</span>
+        <span className="nop-mini">Recibís ≈ <b style={{ color: "var(--gold)" }}>{fmtARS(coArsIn)}</b></span>
         <button className="nop-btn nop-btn-grn nop-btn-sm" disabled={busy || saldoUsd <= 0} onClick={doCloseout}><RefreshCw size={13} />Registrar cierre</button>
       </div>
       {conversions.length > 0 && <div style={{ marginTop: 14, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
@@ -1066,31 +1097,16 @@ function AdminFinance({ orders, flash }) {
         </div>)}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
           <span className="nop-mini" style={{ color: pctSum === 100 ? "var(--grn)" : "var(--red)" }}>Suma: {pctSum}% {pctSum !== 100 ? "(debe dar 100%)" : "✓"}</span>
-          <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setPartners([...partners, { name: "Socio", pct: 0 }])}><Plus size={13} />Socio</button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setPartners([...partners, { name: "Socio", pct: 0 }])}><Plus size={13} />Socio</button>
+            <button className="nop-btn nop-btn-gold nop-btn-sm" disabled={busy} onClick={saveConfig}><Check size={13} />Guardar</button>
+          </div>
         </div>
       </div>
     </div>
 
-    {/* AJUSTES */}
-    <div className="nop-card nop-panel" style={{ marginBottom: 14 }}>
-      <div className="nop-panel-h"><Settings size={15} style={{ color: "var(--mut2)" }} />Ajustes contables</div>
-      <div className="nop-row2" style={{ alignItems: "end", marginBottom: 12 }}>
-        <div className="nop-field" style={{ marginBottom: 0 }}><label>Saldo inicial PESOS <span title="Lo que tenés hoy en la cuenta de pesos. Es el punto de partida; de acá en más se suma lo nuevo." style={{ cursor: "help", color: "var(--mut2)" }}>ⓘ</span></label>
-          <input className="nop-input" type="number" value={openArs} onChange={(e) => setOpenArs(e.target.value)} placeholder="$ actual en pesos" /></div>
-        <div className="nop-field" style={{ marginBottom: 0 }}><label>Saldo inicial USD <span title="Lo que tenés hoy en PayPal / dólares. Punto de partida de la cuenta USD." style={{ cursor: "help", color: "var(--mut2)" }}>ⓘ</span></label>
-          <input className="nop-input" type="number" value={openUsd} onChange={(e) => setOpenUsd(e.target.value)} placeholder="US$ actual" /></div>
-      </div>
-      <div className="nop-row2" style={{ alignItems: "end" }}>
-        <div className="nop-field" style={{ marginBottom: 0 }}><label>Comisión PayPal (%) <span title="Se descuenta de los cobros en USD y del cierre mensual." style={{ cursor: "help", color: "var(--mut2)" }}>ⓘ</span></label>
-          <input className="nop-input" type="number" value={paypalPct} onChange={(e) => setPaypalPct(e.target.value)} /></div>
-        <div className="nop-field" style={{ marginBottom: 0 }}><label>Dólar tarjeta <span title="Para gastos en USD (Netlify, Supabase). Incluí acá el dólar + impuestos. Si lo dejás vacío, usa blue ×1.6." style={{ cursor: "help", color: "var(--mut2)" }}>ⓘ</span></label>
-          <input className="nop-input" type="number" value={tarjeta} onChange={(e) => setTarjeta(e.target.value)} placeholder={blue ? `auto: ${Math.round(blue * 1.6)}` : "auto"} /></div>
-      </div>
-      <button className="nop-btn nop-btn-gold nop-btn-sm" style={{ marginTop: 12 }} disabled={busy} onClick={saveConfig}><Check size={13} />Guardar ajustes y reparto</button>
-    </div>
-
     {/* PAGOS A BOOSTERS */}
-    <div className="nop-card nop-panel">
+    <div className="nop-card nop-panel" style={{ marginBottom: 14 }}>
       <div className="nop-panel-h"><Swords size={15} style={{ color: "var(--cyan)" }} />Pagos a boosters · {mLabel(month)} <span className="nop-mini" style={{ marginLeft: "auto", fontWeight: 400 }}>Deuda pendiente: <b style={{ color: "var(--amber)" }}>{fmtARS(boostersDeuda)}</b></span></div>
       {monthDone.length === 0 ? <Empty icon={Wallet} title="Sin servicios este mes" sub="Cuando se completen servicios, los pagos aparecen acá." /> :
         <div className="nop-tablewrap"><table className="nop-t">
@@ -1103,7 +1119,52 @@ function AdminFinance({ orders, flash }) {
           </tr>)}</tbody>
         </table></div>}
     </div>
+
+    {/* AJUSTES (global, colapsable) */}
+    <div className="nop-card nop-panel">
+      <button className="nop-acc-head" onClick={() => setShowSettings((v) => !v)}>
+        <span className="nop-panel-h" style={{ margin: 0 }}><Settings size={15} style={{ color: "var(--mut2)" }} />Ajustes contables (configuración global)</span>
+        <ChevronRight size={18} style={{ transform: showSettings ? "rotate(90deg)" : "none", transition: ".2s", color: "var(--mut)" }} />
+      </button>
+      {showSettings && <div style={{ marginTop: 14 }}>
+        <div className="nop-row2" style={{ alignItems: "end", marginBottom: 12 }}>
+          <div className="nop-field" style={{ marginBottom: 0 }}><label>Saldo inicial PESOS <span title="Lo que tenés hoy en la cuenta de pesos. Punto de partida; de acá en más se suma lo nuevo." style={{ cursor: "help", color: "var(--mut2)" }}>ⓘ</span></label>
+            <input className="nop-input" type="number" value={openArs} onChange={(e) => setOpenArs(e.target.value)} placeholder="$ actual en pesos" /></div>
+          <div className="nop-field" style={{ marginBottom: 0 }}><label>Saldo inicial USD <span title="Lo que tenés hoy en PayPal / dólares." style={{ cursor: "help", color: "var(--mut2)" }}>ⓘ</span></label>
+            <input className="nop-input" type="number" value={openUsd} onChange={(e) => setOpenUsd(e.target.value)} placeholder="US$ actual" /></div>
+        </div>
+        <div className="nop-row2" style={{ alignItems: "end" }}>
+          <div className="nop-field" style={{ marginBottom: 0 }}><label>Comisión PayPal (%) <span title="Se descuenta solo de los cobros en USD a clientes. No se aplica al pasar USD a pesos." style={{ cursor: "help", color: "var(--mut2)" }}>ⓘ</span></label>
+            <input className="nop-input" type="number" value={paypalPct} onChange={(e) => setPaypalPct(e.target.value)} /></div>
+          <div className="nop-field" style={{ marginBottom: 0 }}><label>Dólar tarjeta <span title="Para gastos en USD (Netlify, Supabase). Incluí el dólar + impuestos. Vacío = blue ×1.6." style={{ cursor: "help", color: "var(--mut2)" }}>ⓘ</span></label>
+            <input className="nop-input" type="number" value={tarjeta} onChange={(e) => setTarjeta(e.target.value)} placeholder={blue ? `auto: ${Math.round(blue * 1.6)}` : "auto"} /></div>
+        </div>
+        <button className="nop-btn nop-btn-gold nop-btn-sm" style={{ marginTop: 12 }} disabled={busy} onClick={saveConfig}><Check size={13} />Guardar configuración global</button>
+
+        <div style={{ borderTop: "1px solid var(--line)", marginTop: 18, paddingTop: 14 }}>
+          <div className="nop-panel-h"><Banknote size={15} style={{ color: "var(--gold)" }} />Ajustar saldo de la cuenta</div>
+          <p className="nop-mini" style={{ marginBottom: 12 }}>Sumá o restá un monto fijo a la cuenta (ej: una comisión de $75, un retiro, una corrección). Usá monto negativo para restar.</p>
+          <AdjustForm onAdd={addAdjustment} />
+          {adjustments.length > 0 && <div style={{ marginTop: 12 }}>{adjustments.slice(0, 10).map((a) => <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "6px 0", fontSize: 12.5, color: "var(--mut)", borderBottom: "1px solid var(--line)" }}>
+            <span>{new Date(a.created_at).toLocaleDateString("es-AR")} · <b style={{ color: Number(a.amount) >= 0 ? "var(--grn)" : "var(--red)" }}>{Number(a.amount) >= 0 ? "+" : ""}{a.currency === "usd" ? fmtUSD(a.amount) : fmtARS(a.amount)}</b>{a.note ? ` · ${a.note}` : ""}</span>
+            <button className="nop-iconbtn" onClick={() => delAdjustment(a.id)}><Trash2 size={13} /></button>
+          </div>)}</div>}
+        </div>
+      </div>}
+    </div>
   </>;
+}
+function AdjustForm({ onAdd }) {
+  const [amount, setAmount] = useState(""); const [ccy, setCcy] = useState("ars"); const [sign, setSign] = useState("-"); const [note, setNote] = useState("");
+  return <div>
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+      <select className="nop-select" style={{ width: 80 }} value={sign} onChange={(e) => setSign(e.target.value)}><option value="-">Restar</option><option value="+">Sumar</option></select>
+      <input className="nop-input" type="number" style={{ width: 110 }} placeholder="monto" value={amount} onChange={(e) => setAmount(e.target.value)} />
+      <select className="nop-select" style={{ width: 90 }} value={ccy} onChange={(e) => setCcy(e.target.value)}><option value="ars">Pesos</option><option value="usd">USD</option></select>
+      <input className="nop-input" style={{ flex: 1, minWidth: 140 }} placeholder="Detalle (ej: comisión, retiro)" value={note} onChange={(e) => setNote(e.target.value)} />
+    </div>
+    <button className="nop-btn nop-btn-ghost nop-btn-sm" style={{ marginTop: 10 }} disabled={!amount} onClick={() => { onAdd((sign === "-" ? -1 : 1) * Math.abs(Number(amount)), ccy, note); setAmount(""); setNote(""); }}><Plus size={13} />Aplicar ajuste</button>
+  </div>;
 }
 function ExpensesPanel({ month, mLabel, monthExpenses, onAdd, onDel, onEdit, total, pesoOf, tarjetaRate }) {
   const [label, setLabel] = useState(""); const [amount, setAmount] = useState(""); const [recurring, setRecurring] = useState(true); const [ccy, setCcy] = useState("ars");
