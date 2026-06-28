@@ -4,6 +4,7 @@ import {
   Flag, Star, Users, TrendingUp, Wallet, Activity, ChevronRight, Trophy, MessageCircle,
   Search, X, ArrowRight, Crown, Zap, Hash, UserCheck, ShieldCheck, Trash2, Send,
   LifeBuoy, Copy, Eye, EyeOff, Upload, FileText, Gamepad2, Plus as PlusIc, Power, Headset, Phone, CalendarDays,
+  Settings, RefreshCw, Banknote,
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import { supabase } from "./supabaseClient";
@@ -871,85 +872,125 @@ function OrderModal({ o, onClose, onDelete, hideProfit }) {
 /* ===================== CONTABLE (ADMIN) ===================== */
 function AdminFinance({ orders, flash }) {
   const mKey = (d) => { if (!d) return null; const x = new Date(d); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0"); };
-  const mLabel = (k) => { if (k === "all") return "Todo el histórico"; const [y, m] = k.split("-"); return new Date(y, m - 1, 1).toLocaleDateString("es-AR", { month: "long", year: "numeric" }); };
+  const mLabel = (k) => { if (!k || k === "all") return "Todo el histórico"; const [y, m] = k.split("-"); return new Date(y, m - 1, 1).toLocaleDateString("es-AR", { month: "long", year: "numeric" }); };
   const thisMonth = mKey(new Date());
   const [month, setMonth] = useState(thisMonth);
   const [blue, setBlue] = useState(null);
   const [expenses, setExpenses] = useState([]);
   const [partners, setPartners] = useState([]);
-  const [loaded, setLoaded] = useState(false);
+  const [conversions, setConversions] = useState([]);
+  const [paypalPct, setPaypalPct] = useState(3);
+  const [tarjeta, setTarjeta] = useState("");
+  const [openArs, setOpenArs] = useState("");
+  const [openUsd, setOpenUsd] = useState("");
   const [busy, setBusy] = useState(false);
+  const [coUsd, setCoUsd] = useState("");
+  const [coRate, setCoRate] = useState("");
 
   const load = async () => {
     const { data: ex } = await supabase.from("fin_expenses").select("*").order("created_at", { ascending: true });
     setExpenses(ex || []);
+    const { data: cv } = await supabase.from("fin_conversions").select("*").order("created_at", { ascending: false });
+    setConversions(cv || []);
     const { data: cfg } = await supabase.from("fin_config").select("*").eq("id", 1).maybeSingle();
-    setPartners((cfg?.partners) || [{ name: "Socio 1", pct: 34 }, { name: "Socio 2", pct: 33 }, { name: "Socio 3", pct: 33 }]);
-    setLoaded(true);
+    setPartners((cfg?.partners) || [{ name: "Tomi", pct: 34 }, { name: "Collo", pct: 33 }, { name: "Nico", pct: 33 }]);
+    setPaypalPct(cfg?.paypal_pct ?? 3);
+    setTarjeta(cfg?.tarjeta_rate != null ? String(cfg.tarjeta_rate) : "");
+    setOpenArs(cfg?.saldo_ini_ars != null ? String(cfg.saldo_ini_ars) : "");
+    setOpenUsd(cfg?.saldo_ini_usd != null ? String(cfg.saldo_ini_usd) : "");
   };
   useEffect(() => { load(); fetchBlue().then(setBlue); }, []);
+
+  const pct = Number(paypalPct || 0) / 100;
+  const tarjetaRate = Number(tarjeta) || (blue ? Math.round(blue * 1.6) : 0);
 
   const completed = orders.filter((o) => o.status === "completed");
   const months = useMemo(() => {
     const s = new Set([thisMonth]); completed.forEach((o) => { const k = mKey(o.completed_at || o.created_at); if (k) s.add(k); });
+    conversions.forEach((c) => { if (c.month) s.add(c.month); });
     return Array.from(s).sort().reverse();
-  }, [orders]);
+  }, [orders, conversions]);
   const inMonth = (o) => mKey(o.completed_at || o.created_at) === month;
   const monthDone = completed.filter(inMonth);
 
-  // --- INGRESOS (price siempre en ARS-equiv; usd_amount = lo cobrado en dólares) ---
-  const cobradoArs = monthDone.filter((o) => (o.currency || "ars") === "ars").reduce((a, o) => a + Number(o.price || 0), 0);
-  const cobradoUsd = monthDone.filter((o) => o.currency === "usd").reduce((a, o) => a + Number(o.usd_amount || 0), 0);
-  const cobradoTotalArs = monthDone.reduce((a, o) => a + Number(o.price || 0), 0); // ya en ARS-equiv
+  // --- INGRESOS ---
+  const arsOrders = monthDone.filter((o) => (o.currency || "ars") === "ars");
+  const usdOrders = monthDone.filter((o) => o.currency === "usd");
+  const cobradoArs = arsOrders.reduce((a, o) => a + Number(o.price || 0), 0);
+  const cobradoUsdBruto = usdOrders.reduce((a, o) => a + Number(o.usd_amount || 0), 0);
+  const cobradoUsdNeto = cobradoUsdBruto * (1 - pct);
+  const cobradoTotalArs = monthDone.reduce((a, o) => a + Number(o.price || 0), 0);     // bruto ARS-equiv
+  const comisionesArs = usdOrders.reduce((a, o) => a + Number(o.price || 0) * pct, 0);   // 3% de la parte USD, en ARS-equiv
 
   // --- BOOSTERS ---
   const boostersTotal = monthDone.reduce((a, o) => a + Number(o.booster_pay || 0), 0);
   const boostersPagado = monthDone.filter((o) => o.booster_paid).reduce((a, o) => a + Number(o.booster_pay || 0), 0);
   const boostersDeuda = boostersTotal - boostersPagado;
 
-  // --- GASTOS del mes (recurrentes + puntuales del mes) ---
+  // --- GASTOS ---
+  const pesoOf = (e) => (e.currency === "usd" ? Number(e.amount || 0) * tarjetaRate : Number(e.amount || 0));
   const monthExpenses = expenses.filter((e) => e.recurring || e.month === month);
-  const gastosTotal = monthExpenses.reduce((a, e) => a + Number(e.amount || 0), 0);
+  const gastosTotal = monthExpenses.reduce((a, e) => a + pesoOf(e), 0);
 
-  // --- GANANCIA NETA ---
-  const gananciaBruta = cobradoTotalArs - boostersTotal;       // después de boosters
-  const gananciaNeta = gananciaBruta - gastosTotal;            // después de gastos fijos
+  // --- GANANCIA ---
+  const gananciaBruta = cobradoTotalArs - comisionesArs - boostersTotal;
+  const gananciaNeta = gananciaBruta - gastosTotal;
   const pctSum = partners.reduce((a, p) => a + Number(p.pct || 0), 0);
 
-  // --- CUENTAS (saldos acumulados, todo el histórico) ---
+  // --- CUENTAS (histórico) ---
   const allDone = completed;
-  const saldoArs = allDone.filter((o) => (o.currency || "ars") === "ars").reduce((a, o) => a + Number(o.price || 0), 0)
+  const convArsIn = conversions.reduce((a, c) => a + Number(c.ars_in || 0), 0);
+  const convUsdOut = conversions.reduce((a, c) => a + Number(c.usd_out || 0), 0);
+  const saldoArs = Number(openArs || 0)
+    + allDone.filter((o) => (o.currency || "ars") === "ars").reduce((a, o) => a + Number(o.price || 0), 0)
     - allDone.filter((o) => o.booster_paid && (o.booster_paid_ccy || "ars") === "ars").reduce((a, o) => a + Number(o.booster_pay || 0), 0)
-    - expenses.reduce((a, e) => a + Number(e.amount || 0), 0);
-  const saldoUsd = allDone.filter((o) => o.currency === "usd").reduce((a, o) => a + Number(o.usd_amount || 0), 0)
-    - allDone.filter((o) => o.booster_paid && o.booster_paid_ccy === "usd").reduce((a, o) => a + Number(o.booster_paid_usd || 0), 0);
+    - expenses.reduce((a, e) => a + pesoOf(e), 0)
+    + convArsIn;
+  const saldoUsd = Number(openUsd || 0)
+    + allDone.filter((o) => o.currency === "usd").reduce((a, o) => a + Number(o.usd_amount || 0) * (1 - pct), 0)
+    - allDone.filter((o) => o.booster_paid && o.booster_paid_ccy === "usd").reduce((a, o) => a + Number(o.booster_paid_usd || 0), 0)
+    - convUsdOut;
   const saldoUnificadoArs = saldoArs + (blue ? saldoUsd * blue : 0);
+
+  // --- CIERRE USD -> PESOS ---
+  const coUsdNum = Number(coUsd) || (saldoUsd > 0 ? Math.round(saldoUsd * 100) / 100 : 0);
+  const coRateNum = Number(coRate) || Number(blue) || 0;
+  const coArsIn = Math.round(coUsdNum * (1 - pct) * coRateNum);
+  const doCloseout = async () => {
+    if (coUsdNum <= 0 || coRateNum <= 0) { flash("Cargá los dólares y el tipo de cambio."); return; }
+    setBusy(true);
+    const { error } = await supabase.from("fin_conversions").insert({ usd_out: coUsdNum, fee_pct: Number(paypalPct || 0), rate: coRateNum, ars_in: coArsIn, month });
+    setBusy(false);
+    if (error) { flash("No se pudo registrar el cierre."); return; }
+    setCoUsd(""); setCoRate(""); await load(); flash(`Cierre registrado: ${fmtUSD(coUsdNum)} → ${fmtARS(coArsIn)}`);
+  };
+  const delConversion = async (id) => { await supabase.from("fin_conversions").delete().eq("id", id); await load(); };
+
+  const saveConfig = async () => {
+    setBusy(true);
+    const { error } = await supabase.from("fin_config").upsert({ id: 1, partners, paypal_pct: Number(paypalPct || 0), tarjeta_rate: tarjeta ? Number(tarjeta) : null, saldo_ini_ars: openArs ? Number(openArs) : 0, saldo_ini_usd: openUsd ? Number(openUsd) : 0, updated_at: new Date().toISOString() });
+    setBusy(false);
+    flash(error ? "No se pudo guardar." : "Ajustes guardados.");
+  };
 
   const togglePaid = async (o, paid) => {
     let ccy = "ars", usd = null;
     if (paid && o.currency === "usd") {
       const ans = window.confirm("¿Le pagaste al booster en DÓLARES?\n\nAceptar = USD · Cancelar = Pesos");
-      if (ans) { ccy = "usd"; usd = Number(o.usd_amount ? Math.round(o.usd_amount * Number(o.booster_pay) / Number(o.price) * 100) / 100 : 0); }
+      if (ans) { ccy = "usd"; usd = Number(o.price) ? Math.round(Number(o.usd_amount) * Number(o.booster_pay) / Number(o.price) * 100) / 100 : 0; }
     }
     await supabase.from("orders").update({ booster_paid: paid, booster_paid_at: paid ? new Date().toISOString() : null, booster_paid_ccy: ccy, booster_paid_usd: usd }).eq("id", o.id);
-    // refresco local rápido
-    o.booster_paid = paid; o.booster_paid_ccy = ccy; o.booster_paid_usd = usd; setBlue((b) => b);
-    flash(paid ? `Pago al booster del #${o.id} marcado como pagado` : `Pago del #${o.id} marcado como pendiente`);
+    o.booster_paid = paid; o.booster_paid_ccy = ccy; o.booster_paid_usd = usd; setBusy((b) => b);
+    flash(paid ? `Pago del #${o.id} marcado como pagado` : `Pago del #${o.id} marcado como pendiente`);
   };
 
-  const addExpense = async (label, amount, recurring) => {
-    const { error } = await supabase.from("fin_expenses").insert({ label, amount: Number(amount), recurring, month: recurring ? null : month });
+  const addExpense = async (label, amount, recurring, currency) => {
+    const { error } = await supabase.from("fin_expenses").insert({ label, amount: Number(amount), recurring, currency, month: recurring ? null : month });
     if (error) { flash("No se pudo guardar el gasto."); return; }
     await load();
   };
   const delExpense = async (id) => { await supabase.from("fin_expenses").delete().eq("id", id); await load(); };
   const editExpense = async (id, amount) => { await supabase.from("fin_expenses").update({ amount: Number(amount) }).eq("id", id); await load(); };
-  const savePartners = async () => {
-    setBusy(true);
-    const { error } = await supabase.from("fin_config").upsert({ id: 1, partners, updated_at: new Date().toISOString() });
-    setBusy(false);
-    flash(error ? "No se pudo guardar el reparto." : "Reparto guardado.");
-  };
 
   const KPI = ({ lbl, val, c, sub }) => <div className="nop-card nop-kpi"><div className="gl" style={{ background: c }} /><div className="lbl" style={{ color: "var(--mut)" }}>{lbl}</div><div className="val" style={{ color: c }}>{val}</div>{sub && <div className="delta">{sub}</div>}</div>;
 
@@ -965,31 +1006,55 @@ function AdminFinance({ orders, flash }) {
     {/* CUENTAS */}
     <div className="nop-grid-kpi" style={{ gridTemplateColumns: "repeat(3,1fr)", marginBottom: 8 }}>
       {KPI({ lbl: "Cuenta en PESOS", val: fmtARS(saldoArs), c: "var(--gold)", sub: "saldo real acumulado" })}
-      {KPI({ lbl: "Cuenta en USD", val: fmtUSD(saldoUsd), c: "var(--grn)", sub: "saldo real acumulado" })}
-      {KPI({ lbl: "Total unificado", val: fmtARS(saldoUnificadoArs), c: "var(--cyan)", sub: blue ? `USD convertido al blue ${fmtARS(blue)}` : "—" })}
+      {KPI({ lbl: "Cuenta en USD", val: fmtUSD(saldoUsd), c: "var(--grn)", sub: "neto, después de comisión" })}
+      {KPI({ lbl: "Total unificado", val: fmtARS(saldoUnificadoArs), c: "var(--cyan)", sub: blue ? `USD al blue ${fmtARS(blue)}` : "—" })}
     </div>
-    <p className="nop-mini" style={{ marginBottom: 18 }}>Las cuentas son saldos acumulados de todo el histórico (no del mes). Pesos y dólares no se mezclan; el total unificado es solo de referencia.</p>
+    <p className="nop-mini" style={{ marginBottom: 18 }}>Saldos acumulados de todo el histórico. Pesos y dólares no se mezclan; el total unificado es solo de referencia.</p>
 
     {/* RESUMEN DEL MES */}
     <div className="nop-card nop-panel" style={{ marginBottom: 14 }}>
       <div className="nop-panel-h"><Activity size={15} style={{ color: "var(--gold)" }} />Resumen de {mLabel(month)}</div>
       <div className="nop-grid-kpi" style={{ gridTemplateColumns: "repeat(4,1fr)" }}>
-        {KPI({ lbl: "Cobrado (pesos)", val: fmtARS(cobradoArs), c: "var(--gold)", sub: monthDone.filter((o) => (o.currency || "ars") === "ars").length + " servicios" })}
-        {KPI({ lbl: "Cobrado (USD)", val: fmtUSD(cobradoUsd), c: "var(--grn)", sub: monthDone.filter((o) => o.currency === "usd").length + " servicios" })}
+        {KPI({ lbl: "Cobrado (pesos)", val: fmtARS(cobradoArs), c: "var(--gold)", sub: arsOrders.length + " servicios" })}
+        {KPI({ lbl: "Cobrado (USD neto)", val: fmtUSD(cobradoUsdNeto), c: "var(--grn)", sub: `bruto ${fmtUSD(cobradoUsdBruto)} · ${usdOrders.length} serv.` })}
         {KPI({ lbl: "Cobrado total", val: fmtARS(cobradoTotalArs), c: "var(--cyan)", sub: "en pesos (USD al blue del cobro)" })}
         {KPI({ lbl: "Servicios", val: monthDone.length, c: "var(--violet)", sub: "completados en el mes" })}
       </div>
       <div className="nop-finflow">
-        <div className="row"><span>Cobrado total del mes</span><b style={{ color: "var(--gold)" }}>{fmtARS(cobradoTotalArs)}</b></div>
+        <div className="row"><span>Cobrado total del mes (bruto)</span><b style={{ color: "var(--gold)" }}>{fmtARS(cobradoTotalArs)}</b></div>
+        <div className="row"><span>− Comisión PayPal ({paypalPct}% sobre USD)</span><b style={{ color: "var(--red)" }}>−{fmtARS(comisionesArs)}</b></div>
         <div className="row"><span>− Pago a boosters ({fmtARS(boostersPagado)} pagado · {fmtARS(boostersDeuda)} pendiente)</span><b style={{ color: "var(--cyan)" }}>−{fmtARS(boostersTotal)}</b></div>
-        <div className="row"><span>− Gastos fijos del mes</span><b style={{ color: "var(--red)" }}>−{fmtARS(gastosTotal)}</b></div>
+        <div className="row"><span>− Gastos del mes</span><b style={{ color: "var(--red)" }}>−{fmtARS(gastosTotal)}</b></div>
         <div className="row total"><span>Ganancia neta</span><b style={{ color: gananciaNeta >= 0 ? "var(--grn)" : "var(--red)" }}>{fmtARS(gananciaNeta)}</b></div>
       </div>
     </div>
 
+    {/* CIERRE USD -> PESOS */}
+    <div className="nop-card nop-panel" style={{ marginBottom: 14 }}>
+      <div className="nop-panel-h"><RefreshCw size={15} style={{ color: "var(--grn)" }} />Cierre de cuenta USD → pesos</div>
+      <p className="nop-mini" style={{ marginBottom: 12 }}>Una vez al mes, pasá los dólares de PayPal a pesos. Se descuenta la comisión del {paypalPct}% y se suma a la cuenta en pesos. Saldo USD actual: <b style={{ color: "var(--grn)" }}>{fmtUSD(saldoUsd)}</b>.</p>
+      <div className="nop-row2" style={{ alignItems: "end" }}>
+        <div className="nop-field" style={{ marginBottom: 0 }}><label>Dólares a pasar</label>
+          <input className="nop-input" type="number" value={coUsd} onChange={(e) => setCoUsd(e.target.value)} placeholder={saldoUsd > 0 ? String(Math.round(saldoUsd * 100) / 100) : "0"} /></div>
+        <div className="nop-field" style={{ marginBottom: 0 }}><label>Tipo de cambio</label>
+          <input className="nop-input" type="number" value={coRate} onChange={(e) => setCoRate(e.target.value)} placeholder={blue ? String(blue) : "blue"} /></div>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12, flexWrap: "wrap", gap: 10 }}>
+        <span className="nop-mini">Recibís ≈ <b style={{ color: "var(--gold)" }}>{fmtARS(coArsIn)}</b> (después del {paypalPct}%)</span>
+        <button className="nop-btn nop-btn-grn nop-btn-sm" disabled={busy || saldoUsd <= 0} onClick={doCloseout}><RefreshCw size={13} />Registrar cierre</button>
+      </div>
+      {conversions.length > 0 && <div style={{ marginTop: 14, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+        <div className="nop-mini" style={{ marginBottom: 8 }}>Historial de conversiones</div>
+        {conversions.slice(0, 8).map((c) => <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "6px 0", fontSize: 12.5, color: "var(--mut)" }}>
+          <span>{new Date(c.created_at).toLocaleDateString("es-AR")} · {fmtUSD(c.usd_out)} → <b style={{ color: "var(--tx)" }}>{fmtARS(c.ars_in)}</b> <span className="nop-mini">(TC {fmtARS(c.rate)} · −{c.fee_pct}%)</span></span>
+          <button className="nop-iconbtn" onClick={() => delConversion(c.id)}><Trash2 size={13} /></button>
+        </div>)}
+      </div>}
+    </div>
+
     <div className="nop-twocol" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
       {/* GASTOS */}
-      <ExpensesPanel month={month} mLabel={mLabel} monthExpenses={monthExpenses} onAdd={addExpense} onDel={delExpense} onEdit={editExpense} total={gastosTotal} />
+      <ExpensesPanel month={month} mLabel={mLabel} monthExpenses={monthExpenses} onAdd={addExpense} onDel={delExpense} onEdit={editExpense} total={gastosTotal} pesoOf={pesoOf} tarjetaRate={tarjetaRate} />
       {/* REPARTO */}
       <div className="nop-card nop-panel">
         <div className="nop-panel-h"><Users size={15} style={{ color: "var(--violet)" }} />Reparto entre socios</div>
@@ -1001,12 +1066,27 @@ function AdminFinance({ orders, flash }) {
         </div>)}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
           <span className="nop-mini" style={{ color: pctSum === 100 ? "var(--grn)" : "var(--red)" }}>Suma: {pctSum}% {pctSum !== 100 ? "(debe dar 100%)" : "✓"}</span>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setPartners([...partners, { name: "Socio", pct: 0 }])}><Plus size={13} />Socio</button>
-            <button className="nop-btn nop-btn-gold nop-btn-sm" disabled={busy} onClick={savePartners}><Check size={13} />Guardar</button>
-          </div>
+          <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setPartners([...partners, { name: "Socio", pct: 0 }])}><Plus size={13} />Socio</button>
         </div>
       </div>
+    </div>
+
+    {/* AJUSTES */}
+    <div className="nop-card nop-panel" style={{ marginBottom: 14 }}>
+      <div className="nop-panel-h"><Settings size={15} style={{ color: "var(--mut2)" }} />Ajustes contables</div>
+      <div className="nop-row2" style={{ alignItems: "end", marginBottom: 12 }}>
+        <div className="nop-field" style={{ marginBottom: 0 }}><label>Saldo inicial PESOS <span title="Lo que tenés hoy en la cuenta de pesos. Es el punto de partida; de acá en más se suma lo nuevo." style={{ cursor: "help", color: "var(--mut2)" }}>ⓘ</span></label>
+          <input className="nop-input" type="number" value={openArs} onChange={(e) => setOpenArs(e.target.value)} placeholder="$ actual en pesos" /></div>
+        <div className="nop-field" style={{ marginBottom: 0 }}><label>Saldo inicial USD <span title="Lo que tenés hoy en PayPal / dólares. Punto de partida de la cuenta USD." style={{ cursor: "help", color: "var(--mut2)" }}>ⓘ</span></label>
+          <input className="nop-input" type="number" value={openUsd} onChange={(e) => setOpenUsd(e.target.value)} placeholder="US$ actual" /></div>
+      </div>
+      <div className="nop-row2" style={{ alignItems: "end" }}>
+        <div className="nop-field" style={{ marginBottom: 0 }}><label>Comisión PayPal (%) <span title="Se descuenta de los cobros en USD y del cierre mensual." style={{ cursor: "help", color: "var(--mut2)" }}>ⓘ</span></label>
+          <input className="nop-input" type="number" value={paypalPct} onChange={(e) => setPaypalPct(e.target.value)} /></div>
+        <div className="nop-field" style={{ marginBottom: 0 }}><label>Dólar tarjeta <span title="Para gastos en USD (Netlify, Supabase). Incluí acá el dólar + impuestos. Si lo dejás vacío, usa blue ×1.6." style={{ cursor: "help", color: "var(--mut2)" }}>ⓘ</span></label>
+          <input className="nop-input" type="number" value={tarjeta} onChange={(e) => setTarjeta(e.target.value)} placeholder={blue ? `auto: ${Math.round(blue * 1.6)}` : "auto"} /></div>
+      </div>
+      <button className="nop-btn nop-btn-gold nop-btn-sm" style={{ marginTop: 12 }} disabled={busy} onClick={saveConfig}><Check size={13} />Guardar ajustes y reparto</button>
     </div>
 
     {/* PAGOS A BOOSTERS */}
@@ -1025,24 +1105,28 @@ function AdminFinance({ orders, flash }) {
     </div>
   </>;
 }
-function ExpensesPanel({ month, mLabel, monthExpenses, onAdd, onDel, onEdit, total }) {
-  const [label, setLabel] = useState(""); const [amount, setAmount] = useState(""); const [recurring, setRecurring] = useState(true);
+function ExpensesPanel({ month, mLabel, monthExpenses, onAdd, onDel, onEdit, total, pesoOf, tarjetaRate }) {
+  const [label, setLabel] = useState(""); const [amount, setAmount] = useState(""); const [recurring, setRecurring] = useState(true); const [ccy, setCcy] = useState("ars");
   return <div className="nop-card nop-panel">
     <div className="nop-panel-h"><FileText size={15} style={{ color: "var(--red)" }} />Gastos · {mLabel(month)}</div>
     {monthExpenses.length === 0 ? <p className="nop-mini" style={{ marginBottom: 12 }}>Sin gastos cargados.</p> :
       <div style={{ marginBottom: 12 }}>{monthExpenses.map((e) => <div key={e.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "7px 0", borderBottom: "1px solid var(--line)" }}>
-        <span style={{ flex: 1, fontSize: 13 }}>{e.label} {e.recurring ? <span className="nop-mini">· fijo</span> : <span className="nop-mini">· puntual</span>}</span>
-        <input className="nop-input" type="number" style={{ width: 110, padding: "6px 8px" }} defaultValue={e.amount} onBlur={(ev) => Number(ev.target.value) !== Number(e.amount) && onEdit(e.id, ev.target.value)} />
+        <span style={{ flex: 1, fontSize: 13 }}>{e.label} <span className="nop-mini">· {e.recurring ? "fijo" : "puntual"}{e.currency === "usd" ? " · USD" : ""}</span>{e.currency === "usd" && <div className="nop-mini">≈ {fmtARS(pesoOf(e))} (al dólar tarjeta {fmtARS(tarjetaRate)})</div>}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <span className="nop-mini">{e.currency === "usd" ? "US$" : "$"}</span>
+          <input className="nop-input" type="number" style={{ width: 100, padding: "6px 8px" }} defaultValue={e.amount} onBlur={(ev) => Number(ev.target.value) !== Number(e.amount) && onEdit(e.id, ev.target.value)} />
+        </div>
         <button className="nop-iconbtn" onClick={() => onDel(e.id)}><Trash2 size={14} /></button>
       </div>)}</div>}
-    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}><b className="nop-mini">Total del mes</b><b style={{ color: "var(--red)" }}>{fmtARS(total)}</b></div>
+    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}><b className="nop-mini">Total del mes (en pesos)</b><b style={{ color: "var(--red)" }}>{fmtARS(total)}</b></div>
     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-      <input className="nop-input" style={{ flex: 1, minWidth: 120 }} placeholder="Nombre (ej: Netlify)" value={label} onChange={(e) => setLabel(e.target.value)} />
-      <input className="nop-input" type="number" style={{ width: 110 }} placeholder="$ pesos" value={amount} onChange={(e) => setAmount(e.target.value)} />
+      <input className="nop-input" style={{ flex: 1, minWidth: 110 }} placeholder="Nombre (ej: Netlify)" value={label} onChange={(e) => setLabel(e.target.value)} />
+      <select className="nop-select" style={{ width: 90 }} value={ccy} onChange={(e) => setCcy(e.target.value)}><option value="ars">Pesos</option><option value="usd">USD</option></select>
+      <input className="nop-input" type="number" style={{ width: 100 }} placeholder={ccy === "usd" ? "US$" : "$"} value={amount} onChange={(e) => setAmount(e.target.value)} />
     </div>
     <label style={{ display: "flex", gap: 8, alignItems: "center", margin: "10px 0", fontSize: 12.5, color: "var(--mut)", cursor: "pointer" }}>
       <input type="checkbox" checked={recurring} onChange={(e) => setRecurring(e.target.checked)} /> Gasto fijo (se repite todos los meses)</label>
-    <button className="nop-btn nop-btn-ghost nop-btn-sm" disabled={!label || !amount} onClick={() => { onAdd(label, amount, recurring); setLabel(""); setAmount(""); }}><Plus size={13} />Agregar gasto</button>
+    <button className="nop-btn nop-btn-ghost nop-btn-sm" disabled={!label || !amount} onClick={() => { onAdd(label, amount, recurring, ccy); setLabel(""); setAmount(""); }}><Plus size={13} />Agregar gasto</button>
   </div>;
 }
 
