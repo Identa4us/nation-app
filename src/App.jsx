@@ -42,6 +42,16 @@ function estimateDuo(cur, curD, tgt, tgtD, combo) {
   return Math.round(price / 100) * 100;
 }
 const fmtARS = (n) => "$" + Math.round(n || 0).toLocaleString("es-AR");
+const fmtUSD = (n) => "US$" + (Math.round((n || 0) * 100) / 100).toLocaleString("es-AR");
+async function fetchBlue() {
+  // Dólar blue (cotización informal) — bluelytics
+  try {
+    const r = await fetch("https://api.bluelytics.com.ar/v2/latest");
+    const j = await r.json();
+    const v = Number(j?.blue?.value_sell || j?.blue?.value_avg);
+    return v > 0 ? v : null;
+  } catch (e) { return null; }
+}
 function svcDuration(o) {
   const start = o.accepted_at || o.created_at;
   const end = o.completed_at;
@@ -414,6 +424,7 @@ function Tabs({ role, tab, setTab, orders, profiles }) {
       {T("dash", "Dashboard", Activity)}
       {T("orders", "Pedidos", Hash)}
       {T("users", "Usuarios", Users)}
+      {T("finance", "Contable", Wallet)}
       {T("accounts", "Cuentas", Gamepad2)}
     </div>;
   }
@@ -460,6 +471,7 @@ function AdminViews({ tab, setTab, ...ctx }) {
   if (tab === "dash") return <AdminDash {...ctx} />;
   if (tab === "orders") return <AdminOrders {...ctx} />;
   if (tab === "users") return <AdminUsers {...ctx} />;
+  if (tab === "finance") return <AdminFinance {...ctx} />;
   if (tab === "accounts") return <AdminAccounts {...ctx} />;
   return <AdminValidate {...ctx} />;
 }
@@ -856,6 +868,184 @@ function OrderModal({ o, onClose, onDelete, hideProfit }) {
     </div></div></div>;
 }
 
+/* ===================== CONTABLE (ADMIN) ===================== */
+function AdminFinance({ orders, flash }) {
+  const mKey = (d) => { if (!d) return null; const x = new Date(d); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0"); };
+  const mLabel = (k) => { if (k === "all") return "Todo el histórico"; const [y, m] = k.split("-"); return new Date(y, m - 1, 1).toLocaleDateString("es-AR", { month: "long", year: "numeric" }); };
+  const thisMonth = mKey(new Date());
+  const [month, setMonth] = useState(thisMonth);
+  const [blue, setBlue] = useState(null);
+  const [expenses, setExpenses] = useState([]);
+  const [partners, setPartners] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    const { data: ex } = await supabase.from("fin_expenses").select("*").order("created_at", { ascending: true });
+    setExpenses(ex || []);
+    const { data: cfg } = await supabase.from("fin_config").select("*").eq("id", 1).maybeSingle();
+    setPartners((cfg?.partners) || [{ name: "Socio 1", pct: 34 }, { name: "Socio 2", pct: 33 }, { name: "Socio 3", pct: 33 }]);
+    setLoaded(true);
+  };
+  useEffect(() => { load(); fetchBlue().then(setBlue); }, []);
+
+  const completed = orders.filter((o) => o.status === "completed");
+  const months = useMemo(() => {
+    const s = new Set([thisMonth]); completed.forEach((o) => { const k = mKey(o.completed_at || o.created_at); if (k) s.add(k); });
+    return Array.from(s).sort().reverse();
+  }, [orders]);
+  const inMonth = (o) => mKey(o.completed_at || o.created_at) === month;
+  const monthDone = completed.filter(inMonth);
+
+  // --- INGRESOS (price siempre en ARS-equiv; usd_amount = lo cobrado en dólares) ---
+  const cobradoArs = monthDone.filter((o) => (o.currency || "ars") === "ars").reduce((a, o) => a + Number(o.price || 0), 0);
+  const cobradoUsd = monthDone.filter((o) => o.currency === "usd").reduce((a, o) => a + Number(o.usd_amount || 0), 0);
+  const cobradoTotalArs = monthDone.reduce((a, o) => a + Number(o.price || 0), 0); // ya en ARS-equiv
+
+  // --- BOOSTERS ---
+  const boostersTotal = monthDone.reduce((a, o) => a + Number(o.booster_pay || 0), 0);
+  const boostersPagado = monthDone.filter((o) => o.booster_paid).reduce((a, o) => a + Number(o.booster_pay || 0), 0);
+  const boostersDeuda = boostersTotal - boostersPagado;
+
+  // --- GASTOS del mes (recurrentes + puntuales del mes) ---
+  const monthExpenses = expenses.filter((e) => e.recurring || e.month === month);
+  const gastosTotal = monthExpenses.reduce((a, e) => a + Number(e.amount || 0), 0);
+
+  // --- GANANCIA NETA ---
+  const gananciaBruta = cobradoTotalArs - boostersTotal;       // después de boosters
+  const gananciaNeta = gananciaBruta - gastosTotal;            // después de gastos fijos
+  const pctSum = partners.reduce((a, p) => a + Number(p.pct || 0), 0);
+
+  // --- CUENTAS (saldos acumulados, todo el histórico) ---
+  const allDone = completed;
+  const saldoArs = allDone.filter((o) => (o.currency || "ars") === "ars").reduce((a, o) => a + Number(o.price || 0), 0)
+    - allDone.filter((o) => o.booster_paid && (o.booster_paid_ccy || "ars") === "ars").reduce((a, o) => a + Number(o.booster_pay || 0), 0)
+    - expenses.reduce((a, e) => a + Number(e.amount || 0), 0);
+  const saldoUsd = allDone.filter((o) => o.currency === "usd").reduce((a, o) => a + Number(o.usd_amount || 0), 0)
+    - allDone.filter((o) => o.booster_paid && o.booster_paid_ccy === "usd").reduce((a, o) => a + Number(o.booster_paid_usd || 0), 0);
+  const saldoUnificadoArs = saldoArs + (blue ? saldoUsd * blue : 0);
+
+  const togglePaid = async (o, paid) => {
+    let ccy = "ars", usd = null;
+    if (paid && o.currency === "usd") {
+      const ans = window.confirm("¿Le pagaste al booster en DÓLARES?\n\nAceptar = USD · Cancelar = Pesos");
+      if (ans) { ccy = "usd"; usd = Number(o.usd_amount ? Math.round(o.usd_amount * Number(o.booster_pay) / Number(o.price) * 100) / 100 : 0); }
+    }
+    await supabase.from("orders").update({ booster_paid: paid, booster_paid_at: paid ? new Date().toISOString() : null, booster_paid_ccy: ccy, booster_paid_usd: usd }).eq("id", o.id);
+    // refresco local rápido
+    o.booster_paid = paid; o.booster_paid_ccy = ccy; o.booster_paid_usd = usd; setBlue((b) => b);
+    flash(paid ? `Pago al booster del #${o.id} marcado como pagado` : `Pago del #${o.id} marcado como pendiente`);
+  };
+
+  const addExpense = async (label, amount, recurring) => {
+    const { error } = await supabase.from("fin_expenses").insert({ label, amount: Number(amount), recurring, month: recurring ? null : month });
+    if (error) { flash("No se pudo guardar el gasto."); return; }
+    await load();
+  };
+  const delExpense = async (id) => { await supabase.from("fin_expenses").delete().eq("id", id); await load(); };
+  const editExpense = async (id, amount) => { await supabase.from("fin_expenses").update({ amount: Number(amount) }).eq("id", id); await load(); };
+  const savePartners = async () => {
+    setBusy(true);
+    const { error } = await supabase.from("fin_config").upsert({ id: 1, partners, updated_at: new Date().toISOString() });
+    setBusy(false);
+    flash(error ? "No se pudo guardar el reparto." : "Reparto guardado.");
+  };
+
+  const KPI = ({ lbl, val, c, sub }) => <div className="nop-card nop-kpi"><div className="gl" style={{ background: c }} /><div className="lbl" style={{ color: "var(--mut)" }}>{lbl}</div><div className="val" style={{ color: c }}>{val}</div>{sub && <div className="delta">{sub}</div>}</div>;
+
+  return <>
+    <div className="nop-sectionhead">
+      <div><h1 className="nop-h1">Gestión contable</h1>
+        <p className="nop-sub">Dólar blue: <b style={{ color: "var(--grn)" }}>{blue ? fmtARS(blue) : "…"}</b> · <button className="nop-linkbtn" style={{ display: "inline" }} onClick={() => fetchBlue().then(setBlue)}>actualizar</button></p></div>
+      <select className="nop-select" style={{ width: "auto", minWidth: 170 }} value={month} onChange={(e) => setMonth(e.target.value)}>
+        {months.map((k) => <option key={k} value={k}>{mLabel(k)}</option>)}
+      </select>
+    </div>
+
+    {/* CUENTAS */}
+    <div className="nop-grid-kpi" style={{ gridTemplateColumns: "repeat(3,1fr)", marginBottom: 8 }}>
+      {KPI({ lbl: "Cuenta en PESOS", val: fmtARS(saldoArs), c: "var(--gold)", sub: "saldo real acumulado" })}
+      {KPI({ lbl: "Cuenta en USD", val: fmtUSD(saldoUsd), c: "var(--grn)", sub: "saldo real acumulado" })}
+      {KPI({ lbl: "Total unificado", val: fmtARS(saldoUnificadoArs), c: "var(--cyan)", sub: blue ? `USD convertido al blue ${fmtARS(blue)}` : "—" })}
+    </div>
+    <p className="nop-mini" style={{ marginBottom: 18 }}>Las cuentas son saldos acumulados de todo el histórico (no del mes). Pesos y dólares no se mezclan; el total unificado es solo de referencia.</p>
+
+    {/* RESUMEN DEL MES */}
+    <div className="nop-card nop-panel" style={{ marginBottom: 14 }}>
+      <div className="nop-panel-h"><Activity size={15} style={{ color: "var(--gold)" }} />Resumen de {mLabel(month)}</div>
+      <div className="nop-grid-kpi" style={{ gridTemplateColumns: "repeat(4,1fr)" }}>
+        {KPI({ lbl: "Cobrado (pesos)", val: fmtARS(cobradoArs), c: "var(--gold)", sub: monthDone.filter((o) => (o.currency || "ars") === "ars").length + " servicios" })}
+        {KPI({ lbl: "Cobrado (USD)", val: fmtUSD(cobradoUsd), c: "var(--grn)", sub: monthDone.filter((o) => o.currency === "usd").length + " servicios" })}
+        {KPI({ lbl: "Cobrado total", val: fmtARS(cobradoTotalArs), c: "var(--cyan)", sub: "en pesos (USD al blue del cobro)" })}
+        {KPI({ lbl: "Servicios", val: monthDone.length, c: "var(--violet)", sub: "completados en el mes" })}
+      </div>
+      <div className="nop-finflow">
+        <div className="row"><span>Cobrado total del mes</span><b style={{ color: "var(--gold)" }}>{fmtARS(cobradoTotalArs)}</b></div>
+        <div className="row"><span>− Pago a boosters ({fmtARS(boostersPagado)} pagado · {fmtARS(boostersDeuda)} pendiente)</span><b style={{ color: "var(--cyan)" }}>−{fmtARS(boostersTotal)}</b></div>
+        <div className="row"><span>− Gastos fijos del mes</span><b style={{ color: "var(--red)" }}>−{fmtARS(gastosTotal)}</b></div>
+        <div className="row total"><span>Ganancia neta</span><b style={{ color: gananciaNeta >= 0 ? "var(--grn)" : "var(--red)" }}>{fmtARS(gananciaNeta)}</b></div>
+      </div>
+    </div>
+
+    <div className="nop-twocol" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
+      {/* GASTOS */}
+      <ExpensesPanel month={month} mLabel={mLabel} monthExpenses={monthExpenses} onAdd={addExpense} onDel={delExpense} onEdit={editExpense} total={gastosTotal} />
+      {/* REPARTO */}
+      <div className="nop-card nop-panel">
+        <div className="nop-panel-h"><Users size={15} style={{ color: "var(--violet)" }} />Reparto entre socios</div>
+        <p className="nop-mini" style={{ marginBottom: 12 }}>Sobre la ganancia neta de {mLabel(month)}: <b style={{ color: "var(--grn)" }}>{fmtARS(gananciaNeta)}</b></p>
+        {partners.map((p, i) => <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+          <input className="nop-input" style={{ flex: 1 }} value={p.name} onChange={(e) => setPartners(partners.map((x, j) => j === i ? { ...x, name: e.target.value } : x))} />
+          <input className="nop-input" type="number" style={{ width: 78 }} value={p.pct} onChange={(e) => setPartners(partners.map((x, j) => j === i ? { ...x, pct: Number(e.target.value) } : x))} />
+          <span className="nop-mini" style={{ width: 90, textAlign: "right" }}>{fmtARS(gananciaNeta * Number(p.pct || 0) / 100)}</span>
+        </div>)}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
+          <span className="nop-mini" style={{ color: pctSum === 100 ? "var(--grn)" : "var(--red)" }}>Suma: {pctSum}% {pctSum !== 100 ? "(debe dar 100%)" : "✓"}</span>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setPartners([...partners, { name: "Socio", pct: 0 }])}><Plus size={13} />Socio</button>
+            <button className="nop-btn nop-btn-gold nop-btn-sm" disabled={busy} onClick={savePartners}><Check size={13} />Guardar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {/* PAGOS A BOOSTERS */}
+    <div className="nop-card nop-panel">
+      <div className="nop-panel-h"><Swords size={15} style={{ color: "var(--cyan)" }} />Pagos a boosters · {mLabel(month)} <span className="nop-mini" style={{ marginLeft: "auto", fontWeight: 400 }}>Deuda pendiente: <b style={{ color: "var(--amber)" }}>{fmtARS(boostersDeuda)}</b></span></div>
+      {monthDone.length === 0 ? <Empty icon={Wallet} title="Sin servicios este mes" sub="Cuando se completen servicios, los pagos aparecen acá." /> :
+        <div className="nop-tablewrap"><table className="nop-t">
+          <thead><tr><th>#</th><th>Booster</th><th>Servicio</th><th>Cobro</th><th>Pago booster</th><th>Estado</th></tr></thead>
+          <tbody>{monthDone.map((o) => <tr key={o.id}>
+            <td>#{o.id}</td><td>{o.booster_name || "—"}</td><td><SvcTag s={o.service} /></td>
+            <td>{o.currency === "usd" ? fmtUSD(o.usd_amount) : fmtARS(o.price)}</td>
+            <td style={{ color: "var(--cyan)" }}>{fmtARS(o.booster_pay)}</td>
+            <td><button className={"nop-btn nop-btn-sm " + (o.booster_paid ? "nop-btn-grn" : "nop-btn-ghost")} onClick={() => togglePaid(o, !o.booster_paid)}>{o.booster_paid ? <><Check size={13} />Pagado</> : "Marcar pagado"}</button></td>
+          </tr>)}</tbody>
+        </table></div>}
+    </div>
+  </>;
+}
+function ExpensesPanel({ month, mLabel, monthExpenses, onAdd, onDel, onEdit, total }) {
+  const [label, setLabel] = useState(""); const [amount, setAmount] = useState(""); const [recurring, setRecurring] = useState(true);
+  return <div className="nop-card nop-panel">
+    <div className="nop-panel-h"><FileText size={15} style={{ color: "var(--red)" }} />Gastos · {mLabel(month)}</div>
+    {monthExpenses.length === 0 ? <p className="nop-mini" style={{ marginBottom: 12 }}>Sin gastos cargados.</p> :
+      <div style={{ marginBottom: 12 }}>{monthExpenses.map((e) => <div key={e.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "7px 0", borderBottom: "1px solid var(--line)" }}>
+        <span style={{ flex: 1, fontSize: 13 }}>{e.label} {e.recurring ? <span className="nop-mini">· fijo</span> : <span className="nop-mini">· puntual</span>}</span>
+        <input className="nop-input" type="number" style={{ width: 110, padding: "6px 8px" }} defaultValue={e.amount} onBlur={(ev) => Number(ev.target.value) !== Number(e.amount) && onEdit(e.id, ev.target.value)} />
+        <button className="nop-iconbtn" onClick={() => onDel(e.id)}><Trash2 size={14} /></button>
+      </div>)}</div>}
+    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}><b className="nop-mini">Total del mes</b><b style={{ color: "var(--red)" }}>{fmtARS(total)}</b></div>
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+      <input className="nop-input" style={{ flex: 1, minWidth: 120 }} placeholder="Nombre (ej: Netlify)" value={label} onChange={(e) => setLabel(e.target.value)} />
+      <input className="nop-input" type="number" style={{ width: 110 }} placeholder="$ pesos" value={amount} onChange={(e) => setAmount(e.target.value)} />
+    </div>
+    <label style={{ display: "flex", gap: 8, alignItems: "center", margin: "10px 0", fontSize: 12.5, color: "var(--mut)", cursor: "pointer" }}>
+      <input type="checkbox" checked={recurring} onChange={(e) => setRecurring(e.target.checked)} /> Gasto fijo (se repite todos los meses)</label>
+    <button className="nop-btn nop-btn-ghost nop-btn-sm" disabled={!label || !amount} onClick={() => { onAdd(label, amount, recurring); setLabel(""); setAmount(""); }}><Plus size={13} />Agregar gasto</button>
+  </div>;
+}
+
 /* ===================== BOOSTER ===================== */
 function BoosterViews({ tab, ...ctx }) {
   if (tab === "mine") return <BoosterMine {...ctx} />;
@@ -1056,6 +1246,9 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
   const [acctUser, setAcctUser] = useState(""), [acctPass, setAcctPass] = useState("");
   const [accepted, setAccepted] = useState(false);
   const [currency, setCurrency] = useState("ars"); // ars | usd
+  const [blue, setBlue] = useState(null);
+  useEffect(() => { if (currency === "usd" && !blue) fetchBlue().then(setBlue); }, [currency]);
+  const usdAmount = blue ? Math.round((price / blue) * 100) / 100 : null;
   const [file, setFile] = useState(null);
   const [busy, setBusy] = useState(false);
   const isCoaching = service === "coaching";
@@ -1109,6 +1302,8 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
       const up = await supabase.storage.from("comprobantes").upload(path, file, { upsert: false });
       if (up.error) throw up.error;
       const eloDetail = isElo ? `${rolOn && eloRoles.length ? "Rol: " + eloRoles.join("/") : "Sin rol fijo"}${champOn && champName ? ` · Campeón: ${champName}` : ""}${express ? " · ⚡ Express" : ""} · LP ${lp}` : "";
+      let fxRate = null, usdAmt = null;
+      if (currency === "usd") { fxRate = blue || (await fetchBlue()); usdAmt = fxRate ? Math.round((price / fxRate) * 100) / 100 : null; }
       const row = {
         client_id: profile.id, client_name: profile.full_name, client_discord: profile.discord || profile.email,
         service, cur_rank: cur, cur_div: curD,
@@ -1119,6 +1314,7 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
         receipt_path: path,
         pref_days: isElo ? null : days.join(", "), pref_times: isElo ? null : times.join(", "),
         acct_user: isElo ? acctUser : null, acct_pass: isElo ? acctPass : null,
+        currency, usd_amount: usdAmt, fx_rate: fxRate,
       };
       const { data: created, error } = await supabase.from("orders").insert(row).select("id").single();
       if (error) throw error;
@@ -1233,6 +1429,7 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
         ) : (
           <div className="nop-card" style={{ padding: 18, background: "var(--bg2)", marginBottom: 18 }}>
             <div className="nop-panel-h" style={{ marginBottom: 12 }}><Wallet size={15} style={{ color: "var(--violet)" }} />Pagá con PayPal</div>
+            <div className="nop-mini" style={{ marginBottom: 10 }}>Monto a pagar: <b style={{ color: "var(--violet)" }}>{usdAmount ? fmtUSD(usdAmount) : "calculando…"}</b>{usdAmount && <span> (≈ {fmtARS(price)} al blue)</span>}</div>
             <p className="nop-mini" style={{ marginBottom: 14 }}>Abrí el link, hacé el pago y descargá el comprobante para subirlo abajo.</p>
             <a className="nop-btn nop-btn-violet" href={PAYPAL_URL} target="_blank" rel="noreferrer"><ArrowRight size={15} />Ir a PayPal</a>
           </div>

@@ -98,6 +98,9 @@ table.nop-t{width:100%;border-collapse:collapse;font-size:13px}
 .nop-chip:hover{border-color:var(--gold);color:var(--tx)}
 .nop-chip.on{background:var(--gold);color:#1a1206;border-color:var(--gold)}
 .nop-authlogo{display:block;max-width:280px;width:78%;height:auto;margin:0 auto 18px}
+.nop-finflow{margin-top:14px;border-top:1px solid var(--line);padding-top:10px}
+.nop-finflow .row{display:flex;justify-content:space-between;gap:12px;padding:8px 0;font-size:13px;color:var(--mut)}
+.nop-finflow .row.total{border-top:1px solid var(--line);margin-top:4px;padding-top:12px;font-size:15px;font-weight:700;color:var(--tx)}
 .nop-btn-sm{padding:8px 13px;font-size:12.5px;border-radius:9px}
 .nop-btn[disabled]{opacity:.45;cursor:not-allowed}
 
