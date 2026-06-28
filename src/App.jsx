@@ -18,7 +18,7 @@ const SERVICES = {
   combo: { label: "DuoBoost + Coaching", icon: Sparkles, color: "#E8B349", desc: "Subís de elo mientras el booster te hace coaching en vivo por Discord." },
   eloboost: { label: "Eloboost", icon: Shield, color: "#F87171", desc: "Un booster sube tu cuenta por vos en modo offline. Máximo 2 ligas por solicitud, por seguridad." },
 };
-const DISCORD_INVITE = "https://discord.gg/Fxghn7S5";
+const DISCORD_INVITE = "https://discord.gg/VcCYYG9e24";
 const STATUS_FLOW = ["pending", "available", "in_progress", "completed"];
 const STATUS_LABEL = { pending: "En revisión", available: "Disponible", in_progress: "En proceso", completed: "Finalizado", cancelled: "Cancelado" };
 
@@ -213,7 +213,7 @@ export default function App() {
     <>
       <div className="nop-topbar"><div className="nop-shell">
         <div className="nop-topbar-in">
-          <div className="nop-logo"><div className="nop-logo-mark"><Crown size={19} /></div><div><b>NATION</b><span>OPS PANEL</span></div></div>
+          <div className="nop-logo"><img src="/logo.png" alt="Eloboost Nation" style={{ height: 30, width: "auto", display: "block" }} /></div>
           <div className="nop-spacer" />
           <span className="nop-roletag">{profile.role === "admin" ? "Admin" : profile.role === "booster" ? "Booster" : "Cliente"}</span>
           <a className="nop-iconbtn" href={SUPPORT_WA} target="_blank" rel="noreferrer" title="Soporte por WhatsApp" style={{ color: "#25D366" }}><Headset size={17} /></a>
@@ -259,6 +259,7 @@ function Auth() {
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [pass, setPass] = useState("");
+  const [pass2, setPass2] = useState("");
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
   const [busy, setBusy] = useState(false);
@@ -273,6 +274,7 @@ function Auth() {
       } else if (mode === "signup") {
         if (!fullName) throw new Error("Ingresá tu nombre.");
         if (!phone) throw new Error("Ingresá tu teléfono.");
+        if (pass !== pass2) throw new Error("Las contraseñas no coinciden.");
         const { data, error } = await supabase.auth.signUp({
           email, password: pass,
           options: { data: { full_name: fullName, role, discord, phone } },
@@ -305,9 +307,9 @@ function Auth() {
   return (
     <div className="nop-auth"><div className="nop-authbox">
       <div className="nop-authhead">
-        <div className="badge">Eloboost Nation</div>
-        <h1 className="nop-display">Panel de Operaciones</h1>
-        <p>{title}</p>
+        <img src="/logo.png" alt="Eloboost Nation" className="nop-authlogo" />
+        <h1 className="nop-display">Juega en la liga que realmente mereces</h1>
+        <p>{mode === "recover" ? title : "Registrate para solicitar tu servicio personalizado y seguilo en tiempo real."}</p>
       </div>
       <div className="nop-card" style={{ padding: 24 }}>
         {mode !== "recover" && <div className="nop-authtabs">
@@ -341,9 +343,14 @@ function Auth() {
 
         {mode !== "recover" && <div className="nop-field"><label>Contraseña <span className="req">*</span></label>
           <input className="nop-input" type="password" value={pass} onChange={(e) => setPass(e.target.value)} placeholder="••••••••"
-            onKeyDown={(e) => e.key === "Enter" && submit()} /></div>}
+            onKeyDown={(e) => e.key === "Enter" && mode === "login" && submit()} /></div>}
 
-        <button className="nop-btn nop-btn-gold" style={{ width: "100%" }} disabled={busy || !email || (mode !== "recover" && !pass)} onClick={submit}>
+        {mode === "signup" && <div className="nop-field"><label>Confirmar contraseña <span className="req">*</span></label>
+          <input className="nop-input" type="password" value={pass2} onChange={(e) => setPass2(e.target.value)} placeholder="Repetí la contraseña"
+            onKeyDown={(e) => e.key === "Enter" && submit()} />
+          {pass2 && pass !== pass2 && <p className="nop-mini" style={{ color: "var(--red)", marginTop: 6 }}>Las contraseñas no coinciden.</p>}</div>}
+
+        <button className="nop-btn nop-btn-gold" style={{ width: "100%" }} disabled={busy || !email || (mode !== "recover" && !pass) || (mode === "signup" && pass !== pass2)} onClick={submit}>
           {busy ? "Procesando…" : mode === "login" ? "Entrar" : mode === "signup" ? "Crear cuenta" : "Enviar enlace"}<ArrowRight size={15} />
         </button>
 
@@ -535,7 +542,10 @@ function AdminValidate({ orders, profiles, reload, flash, notify }) {
           <div className="nop-card nop-panel" key={o.id} style={{ background: "var(--bg2)", display: "flex", justifyContent: "space-between", gap: 14, flexWrap: "wrap", alignItems: "center" }}>
             <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
               <b style={{ color: "var(--mut)" }}>#{o.id}</b><SvcTag s={o.service} /><RankPath o={o} />
-              <div><b style={{ fontSize: 13 }}>{o.client_name}</b><div className="nop-mini">{o.client_discord} · {o.server} · {o.payment}</div></div>
+              <div><b style={{ fontSize: 13 }}>{o.client_name}</b><div className="nop-mini">{o.client_discord} · {o.server} · {o.payment}</div>
+                {o.service === "eloboost" && o.role_champ && <div className="nop-mini" style={{ color: "var(--gold)", marginTop: 3 }}>{o.role_champ}</div>}
+                {o.service === "eloboost" && (o.acct_user || o.acct_pass) && <div className="nop-mini" style={{ marginTop: 2 }}>🔑 Credenciales cargadas (se asignan al booster al validar)</div>}
+              </div>
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
               <b className="nop-display" style={{ color: "var(--gold)" }}>{fmtARS(o.price)}</b>
@@ -792,7 +802,7 @@ function AdminHistory({ orders, deleteOrder }) {
 }
 
 /* ===== tabla compartida ===== */
-function OrdersTable({ orders, cols, onDelete }) {
+function OrdersTable({ orders, cols, onDelete, hideProfit }) {
   const [open, setOpen] = useState(null);
   const head = { id: "#", cliente: "Cliente", rank: "Recorrido", servicio: "Servicio", booster: "Booster", precio: "Precio", pago: "Pago booster", ganancia: "Ganancia", estado: "Estado", rating: "Reseña" };
   return <>
@@ -800,7 +810,7 @@ function OrdersTable({ orders, cols, onDelete }) {
       <thead><tr>{cols.map((c) => <th key={c}>{head[c]}</th>)}</tr></thead>
       <tbody>{orders.map((o) => <tr key={o.id} style={{ cursor: "pointer" }} onClick={() => setOpen(o)}>{cols.map((c) => <td key={c}>{cell(c, o)}</td>)}</tr>)}</tbody>
     </table></div>
-    {open && <OrderModal o={open} onClose={() => setOpen(null)} onDelete={onDelete} />}
+    {open && <OrderModal o={open} onClose={() => setOpen(null)} onDelete={onDelete} hideProfit={hideProfit} />}
   </>;
 }
 function cell(c, o) {
@@ -818,7 +828,7 @@ function cell(c, o) {
     default: return null;
   }
 }
-function OrderModal({ o, onClose, onDelete }) {
+function OrderModal({ o, onClose, onDelete, hideProfit }) {
   const F = ({ k, v }) => <div style={{ display: "flex", justifyContent: "space-between", gap: 16, padding: "9px 0", borderBottom: "1px solid var(--line)" }}><span className="nop-mini" style={{ flexShrink: 0 }}>{k}</span><span style={{ fontSize: 13, textAlign: "right" }}>{v}</span></div>;
   const S = ({ k, v, c }) => <div className="nop-card" style={{ padding: "12px 8px", background: "var(--bg2)" }}><div className="nop-mini">{k}</div><div className="nop-display" style={{ fontSize: 16, fontWeight: 700, color: c, marginTop: 4 }}>{v}</div></div>;
   return <div className="nop-modal" onClick={onClose}><div className="nop-card nop-modalbox" onClick={(e) => e.stopPropagation()}>
@@ -835,8 +845,9 @@ function OrderModal({ o, onClose, onDelete }) {
       <F k="Booster" v={o.booster_name || "Sin asignar"} />
       <F k="Medio de pago" v={o.payment} />
       {o.status === "completed" && <F k="Duración del servicio" v={svcDuration(o)} />}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, margin: "14px 0", textAlign: "center" }}>
-        <S k="Precio" v={fmtARS(o.price)} c="var(--gold)" /><S k="Pago booster" v={fmtARS(o.booster_pay)} c="var(--cyan)" /><S k="Ganancia" v={fmtARS(o.profit)} c="var(--grn)" />
+      <div style={{ display: "grid", gridTemplateColumns: hideProfit ? "1fr 1fr" : "1fr 1fr 1fr", gap: 10, margin: "14px 0", textAlign: "center" }}>
+        <S k="Precio" v={fmtARS(o.price)} c="var(--gold)" /><S k="Pago booster" v={fmtARS(o.booster_pay)} c="var(--cyan)" />
+        {!hideProfit && <S k="Ganancia" v={fmtARS(o.profit)} c="var(--grn)" />}
       </div>
       {o.survey_rating && <div className="nop-card" style={{ padding: 14, background: "var(--bg2)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><b style={{ fontSize: 13 }}>Reseña del cliente</b><Stars value={o.survey_rating} /></div>
@@ -888,7 +899,7 @@ function BoosterMine({ profile, orders, reload, flash, notify }) {
   const mine = orders.filter((o) => o.booster_id === profile.id && o.status === "in_progress");
   const finish = async (o) => {
     await supabase.from("orders").update({ status: "completed", completed_at: new Date().toISOString() }).eq("id", o.id);
-    await notify(`Servicio #${o.id} finalizado por ${profile.full_name}.`, "admin", null, "done", "order", o.id);
+    await notify(`Servicio #${o.id} (${SERVICES[o.service].label}) finalizado por ${profile.full_name}.`, "admin", null, "done", "order", o.id);
     await notify(`Tu servicio #${o.id} fue finalizado. ¡Dejanos tu reseña!`, null, o.client_id, "done", "order", o.id);
     await reload(); flash(`Servicio #${o.id} finalizado`);
   };
@@ -910,6 +921,13 @@ function BoosterMine({ profile, orders, reload, flash, notify }) {
             {o.pref_days && <span><CalendarDays size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />Días: {o.pref_days}</span>}
             {o.pref_times && <span><Clock size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />Horario: {o.pref_times}</span>}</div>}
           {o.notes && <p className="nop-mini" style={{ fontStyle: "italic", marginBottom: 14 }}>Nota: "{o.notes}"</p>}
+          {o.service === "eloboost" && (o.acct_user || o.acct_pass) && <div className="nop-card" style={{ padding: 14, background: "var(--bg2)", marginBottom: 14 }}>
+            <div className="nop-panel-h" style={{ marginBottom: 10 }}><Shield size={14} style={{ color: "var(--gold)" }} />Credenciales de la cuenta</div>
+            <Cred label="Usuario" value={o.acct_user} flash={flash} />
+            <div style={{ height: 8 }} />
+            <Cred label="Contraseña" value={o.acct_pass} flash={flash} />
+            <p className="nop-mini" style={{ marginTop: 10 }}>Jugá en modo offline. No las compartas con nadie.</p>
+          </div>}
           <button className="nop-btn nop-btn-grn" onClick={() => finish(o)}><Flag size={15} />Marcar finalizado</button>
         </div>))}</div>}
   </>;
@@ -928,7 +946,7 @@ function BoosterHist({ profile, orders }) {
     </div>
     <div className="nop-card nop-panel">
       {done.length === 0 ? <Empty icon={Trophy} title="Aún sin cierres" sub="Tus servicios finalizados se listan acá." />
-        : <OrdersTable orders={done} cols={["id", "cliente", "rank", "servicio", "pago", "rating"]} />}
+        : <OrdersTable orders={done} hideProfit cols={["id", "cliente", "rank", "servicio", "pago", "rating"]} />}
     </div>
   </>;
 }
@@ -1003,6 +1021,10 @@ function ClientOrderCard({ o, reload, flash, notify }) {
         <div className="ic"><MessageCircle size={19} /></div>
         <div style={{ flex: 1 }}><b style={{ fontSize: 13 }}>Tu booster es {o.booster_name}</b><div className="nop-mini">Entrá al Discord y buscá <b style={{ color: "var(--tx)" }}>#pedido-{o.id}</b>.</div></div>
         <a className="nop-btn nop-btn-sm nop-btn-ghost" href={DISCORD_INVITE} target="_blank" rel="noreferrer">Abrir Discord</a></div>}
+      {o.status === "in_progress" && o.service === "eloboost" && <div className="nop-card" style={{ padding: 14, marginTop: 12, background: "rgba(248,113,113,.08)", border: "1px solid rgba(248,113,113,.3)", display: "flex", gap: 10, alignItems: "flex-start" }}>
+        <Shield size={18} style={{ color: "#f87171", flexShrink: 0, marginTop: 1 }} />
+        <span style={{ fontSize: 12.5, color: "var(--mut)", lineHeight: 1.6 }}><b style={{ color: "#f87171" }}>Importante:</b> no ingreses a tu cuenta hasta que el servicio esté completado. Por seguridad (cambio de IP), si entrás mientras el booster trabaja, podés interrumpir el servicio o exponer la cuenta.</span>
+      </div>}
       {o.status === "completed" && !o.survey_rating && <div className="nop-card" style={{ padding: 18, background: "var(--bg2)" }}>
         <div className="nop-panel-h" style={{ marginBottom: 6 }}><Star size={15} style={{ color: "var(--gold)" }} />¿Cómo estuvo tu experiencia con {o.booster_name}?</div>
         <p className="nop-mini" style={{ marginBottom: 12 }}>Duración del servicio: <b style={{ color: "var(--tx)" }}>{svcDuration(o)}</b></p>
@@ -1026,33 +1048,59 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
   const [days, setDays] = useState([]);
   const [times, setTimes] = useState([]);
   const toggleArr = (arr, set, v) => set(arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v]);
-  const [eloRole, setEloRole] = useState("Mid");
+  const DRAFT_KEY = "nop_draft_" + profile.id;
+  const [eloRoles, setEloRoles] = useState([]);
+  const [rolOn, setRolOn] = useState(false);
   const [champOn, setChampOn] = useState(false), [champName, setChampName] = useState("");
   const [express, setExpress] = useState(false);
+  const [acctUser, setAcctUser] = useState(""), [acctPass, setAcctPass] = useState("");
   const [accepted, setAccepted] = useState(false);
   const [currency, setCurrency] = useState("ars"); // ars | usd
   const [file, setFile] = useState(null);
   const [busy, setBusy] = useState(false);
   const isCoaching = service === "coaching";
   const isElo = service === "eloboost";
-  const tierDiff = RANKS.indexOf(tgt) - RANKS.indexOf(cur);
-  const eloTooFar = isElo && tierDiff > 2;
-  const eloInvalid = isElo && (rankPos(tgt, tgtD) <= rankPos(cur, curD) || eloTooFar);
+  const curPos = rankPos(cur, curD);
+  const steps = rankPos(tgt, tgtD) - curPos;       // divisiones a subir (1 liga = 4)
+  const eloTooFar = isElo && steps > 8;            // máximo 2 ligas = 8 divisiones
+  const eloInvalid = isElo && (steps <= 0 || steps > 8);
+  // límites de selección para eloboost (no más de 2 ligas)
+  const eloTgtRanks = RANKS.filter((r, i) => i >= RANKS.indexOf(cur) && i <= RANKS.indexOf(cur) + 2);
+  const eloTgtDivs = DIVS.filter((d) => { const s = rankPos(tgt, d) - curPos; return s > 0 && s <= 8; });
+  const lpSurcharge = lp === "+15" ? 1.1 : 1; // +15 LP = +10%
+
   const price = useMemo(() => {
     if (isCoaching) return COACHING_PRICE[games];
     if (isElo) {
       let b = estimateDuo(cur, curD, tgt, tgtD, false);
-      if (champOn) b *= 1.5;
-      if (express) b *= 1.2;
+      b *= lpSurcharge;
+      if (rolOn && eloRoles.length) b *= 1.3;   // rol específico +30%
+      if (champOn) b *= 1.5;                      // campeón +50%
+      if (express) b *= 1.2;                      // express +20%
       return Math.round(b / 100) * 100;
     }
     return estimateDuo(cur, curD, tgt, tgtD, service === "combo");
-  }, [service, cur, curD, tgt, tgtD, games, isCoaching, isElo, champOn, express]);
+  }, [service, cur, curD, tgt, tgtD, games, isCoaching, isElo, rolOn, eloRoles, champOn, express, lp]);
   const SvcIc = ({ k }) => { const Ic = SERVICES[k].icon; return <Ic size={19} />; };
   const copy = (t) => { try { navigator.clipboard.writeText(t); flash("Copiado: " + t); } catch (e) { flash("Copiá manualmente: " + t); } };
 
+  // guardar/restaurar borrador del formulario (sobrevive refresh y cambio de pestaña)
+  useEffect(() => {
+    try { const d = JSON.parse(localStorage.getItem(DRAFT_KEY) || "null");
+      if (d) { setService(d.service ?? "duoboost"); setCur(d.cur ?? "Oro"); setCurD(d.curD ?? "IV"); setTgt(d.tgt ?? "Platino"); setTgtD(d.tgtD ?? "IV");
+        setServer(d.server ?? "LAS"); setLp(d.lp ?? "+20"); setGames(d.games ?? 3); setRoleChamp(d.roleChamp ?? ""); setNotes(d.notes ?? "");
+        setDays(d.days ?? []); setTimes(d.times ?? []); setEloRoles(d.eloRoles ?? []); setRolOn(d.rolOn ?? false);
+        setChampOn(d.champOn ?? false); setChampName(d.champName ?? ""); setExpress(d.express ?? false); setStep(d.step ?? 1); }
+    } catch (e) {}
+  }, []);
+  useEffect(() => {
+    const d = { service, cur, curD, tgt, tgtD, server, lp, games, roleChamp, notes, days, times, eloRoles, rolOn, champOn, champName, express, step };
+    try { localStorage.setItem(DRAFT_KEY, JSON.stringify(d)); } catch (e) {}
+  }, [service, cur, curD, tgt, tgtD, server, lp, games, roleChamp, notes, days, times, eloRoles, rolOn, champOn, champName, express, step]);
+
   const submit = async () => {
     if (!file) { flash("Subí el comprobante de pago para continuar."); return; }
+    if (isElo && (!acctUser || !acctPass)) { flash("Ingresá el usuario y la contraseña de la cuenta."); return; }
     if (isElo && !accepted) { flash("Tenés que aceptar los términos y condiciones."); return; }
     setBusy(true);
     try {
@@ -1060,20 +1108,22 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
       const path = `${profile.id}/${Date.now()}.${ext}`;
       const up = await supabase.storage.from("comprobantes").upload(path, file, { upsert: false });
       if (up.error) throw up.error;
-      const eloDetail = isElo ? `Rol: ${eloRole}${champOn && champName ? ` · Campeón: ${champName}` : ""}${express ? " · ⚡ Express" : ""}` : "";
+      const eloDetail = isElo ? `${rolOn && eloRoles.length ? "Rol: " + eloRoles.join("/") : "Sin rol fijo"}${champOn && champName ? ` · Campeón: ${champName}` : ""}${express ? " · ⚡ Express" : ""} · LP ${lp}` : "";
       const row = {
         client_id: profile.id, client_name: profile.full_name, client_discord: profile.discord || profile.email,
         service, cur_rank: cur, cur_div: curD,
         tgt_rank: isCoaching ? cur : tgt, tgt_div: isCoaching ? curD : tgtD,
-        server, lp: (isCoaching || isElo) ? null : lp, games: isCoaching ? games : null,
+        server, lp: isCoaching ? null : lp, games: isCoaching ? games : null,
         role_champ: isCoaching ? `${roleChamp || "Sin preferencia"} · ${games} partida${games > 1 ? "s" : ""}` : isElo ? eloDetail : roleChamp,
         notes, payment: currency === "ars" ? "Transferencia (pesos)" : "PayPal (USD)", price, status: "pending",
         receipt_path: path,
         pref_days: isElo ? null : days.join(", "), pref_times: isElo ? null : times.join(", "),
+        acct_user: isElo ? acctUser : null, acct_pass: isElo ? acctPass : null,
       };
       const { data: created, error } = await supabase.from("orders").insert(row).select("id").single();
       if (error) throw error;
-      await notify(`Nuevo pedido de ${profile.full_name} entró por validar (con comprobante).`, "admin", null, "new", "order", created?.id);
+      try { localStorage.removeItem(DRAFT_KEY); } catch (e) {}
+      await notify(`Nuevo pedido de ${profile.full_name} — ${SERVICES[service].label} — entró por validar (con comprobante).`, "admin", null, "new", "order", created?.id);
       await reload(); flash("¡Pedido enviado! Validamos el comprobante y pasa a los boosters."); setTab("home");
     } catch (e) {
       flash("No se pudo enviar el pedido. Reintentá.");
@@ -1098,8 +1148,8 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
             <select className="nop-select" value={cur} onChange={(e) => setCur(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
             <select className="nop-select" value={curD} onChange={(e) => setCurD(e.target.value)} disabled={cur === "Master"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select></div></div>
           <div className="nop-field" style={{ marginBottom: 8 }}><label>Liga objetivo <span className="req">*</span></label><div className="nop-row2">
-            <select className="nop-select" value={tgt} onChange={(e) => setTgt(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
-            <select className="nop-select" value={tgtD} onChange={(e) => setTgtD(e.target.value)} disabled={tgt === "Master"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select></div></div>
+            <select className="nop-select" value={tgt} onChange={(e) => setTgt(e.target.value)}>{(isElo ? eloTgtRanks : RANKS).map((r) => <option key={r}>{r}</option>)}</select>
+            <select className="nop-select" value={tgtD} onChange={(e) => setTgtD(e.target.value)} disabled={tgt === "Master"}>{(isElo ? (eloTgtDivs.length ? eloTgtDivs : ["IV"]) : DIVS).map((d) => <option key={d}>{d}</option>)}</select></div></div>
         </div> : <div className="nop-row2">
           <div className="nop-field"><label>Tu liga actual</label><div className="nop-row2">
             <select className="nop-select" value={cur} onChange={(e) => setCur(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
@@ -1120,16 +1170,25 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
         </div>
 
         {isElo ? <>
-          <div className="nop-field"><label>Rol <span className="req">*</span></label>
-            <div className="nop-chiprow">{LANES.map((l) => (
-              <button type="button" key={l} className={"nop-chip" + (eloRole === l ? " on" : "")} onClick={() => setEloRole(l)}>{l}</button>))}</div></div>
+          <div className="nop-row2">
+            <div className="nop-field"><label>Ganancia LP aprox <span title="Con +15 LP el recargo es del 10%. +20 y +25 mantienen el precio." style={{ cursor: "help", color: "var(--mut2)" }}>ⓘ</span></label>
+              <select className="nop-select" value={lp} onChange={(e) => setLp(e.target.value)}><option>+15</option><option>+20</option><option>+25</option></select></div>
+            <div />
+          </div>
+          <div className="nop-field">
+            <label style={{ display: "flex", alignItems: "center", gap: 9, cursor: "pointer" }}>
+              <input type="checkbox" checked={rolOn} onChange={(e) => setRolOn(e.target.checked)} /> Rol específico <b style={{ color: "var(--gold)" }}>(+30%)</b> <span style={{ color: "var(--mut2)", fontWeight: 400 }}>· opcional</span></label>
+            {rolOn && <div className="nop-chiprow" style={{ marginTop: 8 }}>{LANES.map((l) => (
+              <button type="button" key={l} className={"nop-chip" + (eloRoles.includes(l) ? " on" : "")} onClick={() => toggleArr(eloRoles, setEloRoles, l)}>{l}</button>))}</div>}
+            {rolOn && <p className="nop-mini" style={{ marginTop: 6 }}>Podés elegir más de un rol.</p>}</div>
           <div className="nop-field">
             <label style={{ display: "flex", alignItems: "center", gap: 9, cursor: "pointer" }}>
               <input type="checkbox" checked={champOn} onChange={(e) => setChampOn(e.target.checked)} /> Campeón específico <b style={{ color: "var(--gold)" }}>(+50%)</b></label>
             {champOn && <input className="nop-input" style={{ marginTop: 8 }} value={champName} onChange={(e) => setChampName(e.target.value)} placeholder="¿Con qué campeón querés que suba? Ej: Yasuo" />}</div>
           <div className="nop-field">
             <label style={{ display: "flex", alignItems: "center", gap: 9, cursor: "pointer" }}>
-              <input type="checkbox" checked={express} onChange={(e) => setExpress(e.target.checked)} /> Entrega express <b style={{ color: "var(--gold)" }}>(+20%)</b> · alta prioridad</label></div>
+              <input type="checkbox" checked={express} onChange={(e) => setExpress(e.target.checked)} /> Entrega express <b style={{ color: "var(--gold)" }}>(+20%)</b>
+              <span title="Te damos prioridad para asignarte un booster lo antes posible." style={{ cursor: "help", color: "var(--mut2)" }}>ⓘ</span></label></div>
         </> : <>
           <div className="nop-field"><label>Rol / campeón preferido</label><input className="nop-input" value={roleChamp} onChange={(e) => setRoleChamp(e.target.value)} placeholder="Ej: ADC, Mid Katarina, Flash en D" /></div>
           <div className="nop-field"><label><CalendarDays size={13} style={{ verticalAlign: "-2px", marginRight: 5 }} />Días de preferencia</label>
@@ -1144,7 +1203,7 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
         <div className="nop-field"><label>Notas para el booster</label><textarea className="nop-ta" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Horarios, preferencias, lo que quieras aclarar…" /></div>
 
         <div className="nop-card" style={{ padding: 16, background: "var(--bg2)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 14 }}>
-          <div><div className="nop-mini">Precio estimado {service === "combo" && "(incluye coaching en vivo +50%)"}{isElo && champOn && " · +50% campeón"}{isElo && express && " · +20% express"}</div>
+          <div><div className="nop-mini">Precio estimado {service === "combo" && "(incluye coaching en vivo +50%)"}{isElo && lpSurcharge > 1 && " · +10% LP"}{isElo && rolOn && eloRoles.length > 0 && " · +30% rol"}{isElo && champOn && " · +50% campeón"}{isElo && express && " · +20% express"}</div>
             <div className="nop-display" style={{ fontSize: 26, fontWeight: 700, color: "var(--gold)" }}>{fmtARS(price)}</div>
             <div className="nop-mini">Lo confirma el equipo según tu MMR.</div></div>
           <button className="nop-btn nop-btn-gold" disabled={eloInvalid} onClick={() => setStep(2)}>Siguiente: pago <ArrowRight size={15} /></button>
@@ -1169,7 +1228,7 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
               <div><div className="nop-mini">Nombre / referencia</div><b style={{ fontSize: 15 }}>{PAY_NAME}</b></div>
               <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => copy(PAY_NAME)}><Copy size={13} />Copiar</button>
             </div>
-            <div className="nop-mini" style={{ marginTop: 12 }}>Monto a transferir: <b style={{ color: "var(--gold)" }}>{fmtARS(price)}</b> (aprox., se confirma según tu MMR).</div>
+            <div className="nop-mini" style={{ marginTop: 12 }}>Monto a transferir: <b style={{ color: "var(--gold)" }}>{fmtARS(price)}</b></div>
           </div>
         ) : (
           <div className="nop-card" style={{ padding: 18, background: "var(--bg2)", marginBottom: 18 }}>
@@ -1187,6 +1246,17 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
         </label>
         {!file && <p className="nop-mini" style={{ marginTop: 8 }}>Sin comprobante no podés enviar el pedido.</p>}
 
+        {isElo && <div className="nop-card" style={{ padding: 16, background: "var(--bg2)", marginTop: 18 }}>
+          <div className="nop-panel-h" style={{ marginBottom: 6 }}><Shield size={15} style={{ color: "var(--gold)" }} />Credenciales de tu cuenta</div>
+          <p className="nop-mini" style={{ marginBottom: 12 }}>Las credenciales se le asignan al booster correspondiente <b style={{ color: "var(--tx)" }}>una vez validado el pago</b>. Hasta entonces nadie las ve.</p>
+          <div className="nop-row2">
+            <div className="nop-field" style={{ marginBottom: 0 }}><label>Usuario <span className="req">*</span></label>
+              <input className="nop-input" value={acctUser} onChange={(e) => setAcctUser(e.target.value)} placeholder="usuario de inicio de sesión" /></div>
+            <div className="nop-field" style={{ marginBottom: 0 }}><label>Contraseña <span className="req">*</span></label>
+              <input className="nop-input" type="text" value={acctPass} onChange={(e) => setAcctPass(e.target.value)} placeholder="contraseña de la cuenta" /></div>
+          </div>
+        </div>}
+
         {isElo && <div className="nop-card" style={{ padding: 16, background: "rgba(248,113,113,.08)", border: "1px solid rgba(248,113,113,.3)", marginTop: 18 }}>
           <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer" }}>
             <input type="checkbox" checked={accepted} onChange={(e) => setAccepted(e.target.checked)} style={{ marginTop: 3 }} />
@@ -1198,7 +1268,7 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
 
         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 20 }}>
           <button className="nop-btn nop-btn-ghost" onClick={() => setStep(1)}>← Volver</button>
-          <button className="nop-btn nop-btn-gold" disabled={busy || !file || (isElo && !accepted)} onClick={submit}><Check size={15} />{busy ? "Enviando…" : "Enviar pedido"}</button>
+          <button className="nop-btn nop-btn-gold" disabled={busy || !file || (isElo && (!accepted || !acctUser || !acctPass))} onClick={submit}><Check size={15} />{busy ? "Enviando…" : "Enviar pedido"}</button>
         </div>
       </>}
     </div>
