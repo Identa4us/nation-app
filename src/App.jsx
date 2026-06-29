@@ -107,6 +107,7 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [recovery, setRecovery] = useState(false);
   const [focusOrder, setFocusOrder] = useState(null);
+  const [showProfile, setShowProfile] = useState(false);
   const [lastSeen, setLastSeen] = useState(0);
   const flash = (m) => { setToast(m); setTimeout(() => setToast(""), 2600); };
   const reloadRef = useRef(() => {});
@@ -247,8 +248,8 @@ export default function App() {
           <span className="nop-roletag">{profile.role === "admin" ? "Admin" : profile.role === "booster" ? "Booster" : "Cliente"}</span>
           <a className="nop-iconbtn" href={SUPPORT_WA} target="_blank" rel="noreferrer" title="Soporte por WhatsApp" style={{ color: "#25D366" }}><Headset size={17} /></a>
           <button className="nop-iconbtn" onClick={openDrawer}><Bell size={17} />{unread > 0 && <span className="nop-dot">{unread > 9 ? "9+" : unread}</span>}</button>
-          <div className="nop-userchip"><span className="nm">{profile.full_name || profile.email}</span>
-            <span className="nop-avatar" style={{ background: avatarColor }}>{(profile.full_name || "?")[0]?.toUpperCase()}</span></div>
+          <button className="nop-userchip" onClick={() => setShowProfile(true)} title="Mi perfil" style={{ background: "none", border: "none", cursor: "pointer", padding: 0 }}><span className="nm">{profile.full_name || profile.email}</span>
+            <span className="nop-avatar" style={{ background: avatarColor }}>{(profile.full_name || "?")[0]?.toUpperCase()}</span></button>
           <button className="nop-iconbtn" onClick={logout} title="Salir"><LogOut size={16} /></button>
         </div>
         <Tabs role={profile.role} tab={tab} setTab={setTab} orders={orders} profiles={profiles} />
@@ -261,12 +262,45 @@ export default function App() {
       </div></div>
 
       {drawer && <Drawer notifs={notifs} lastSeen={lastSeen} onClose={closeDrawer} onClick={handleNotif} onMarkAll={markSeen} />}
+      {showProfile && <ProfileModal profile={profile} onClose={() => setShowProfile(false)} flash={flash} />}
       {focusOrder && <OrderModal o={focusOrder} onClose={() => setFocusOrder(null)} onDelete={profile.role === "admin" ? deleteOrder : null} />}
       {toast && <div className="nop-toast"><Check size={16} style={{ color: "var(--grn)" }} />{toast}</div>}
     </>
   );
 }
 
+function ProfileModal({ profile, onClose, flash }) {
+  const [pass, setPass] = useState(""), [pass2, setPass2] = useState(""), [busy, setBusy] = useState(false);
+  const roleLabel = profile.role === "admin" ? "Administrador" : profile.role === "booster" ? "Booster" : "Cliente";
+  const save = async () => {
+    if (pass.length < 6) { flash("La contraseña debe tener al menos 6 caracteres."); return; }
+    if (pass !== pass2) { flash("Las contraseñas no coinciden."); return; }
+    setBusy(true);
+    const { error } = await supabase.auth.updateUser({ password: pass });
+    setBusy(false);
+    if (error) { flash("No se pudo actualizar la contraseña."); return; }
+    setPass(""); setPass2(""); flash("Contraseña actualizada."); onClose();
+  };
+  const F = ({ k, v }) => <div style={{ display: "flex", justifyContent: "space-between", gap: 16, padding: "9px 0", borderBottom: "1px solid var(--line)" }}><span className="nop-mini">{k}</span><span style={{ fontSize: 13 }}>{v}</span></div>;
+  return <div className="nop-modal" onClick={onClose}><div className="nop-card nop-modalbox" onClick={(e) => e.stopPropagation()}>
+    <div className="hd"><h3>Mi perfil</h3><button className="nop-iconbtn" onClick={onClose}><X size={16} /></button></div>
+    <div className="bd">
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
+        <span className="nop-avatar" style={{ width: 44, height: 44, fontSize: 18, background: "var(--gold)" }}>{(profile.full_name || "?")[0]?.toUpperCase()}</span>
+        <div><b style={{ fontSize: 15 }}>{profile.full_name || "—"}</b><div className="nop-mini">{roleLabel}</div></div>
+      </div>
+      <F k="Email" v={profile.email} />
+      {profile.discord && <F k="Discord" v={profile.discord} />}
+      {profile.phone && <F k="Teléfono" v={profile.phone} />}
+      <div style={{ marginTop: 18 }}>
+        <div className="nop-panel-h"><Shield size={15} style={{ color: "var(--gold)" }} />Cambiar contraseña</div>
+        <div className="nop-field"><label>Nueva contraseña</label><input className="nop-input" type="password" value={pass} onChange={(e) => setPass(e.target.value)} placeholder="••••••••" /></div>
+        <div className="nop-field"><label>Repetir contraseña</label><input className="nop-input" type="password" value={pass2} onChange={(e) => setPass2(e.target.value)} placeholder="••••••••" />
+          {pass2 && pass !== pass2 && <p className="nop-mini" style={{ color: "var(--red)", marginTop: 6 }}>No coinciden.</p>}</div>
+        <button className="nop-btn nop-btn-gold" style={{ width: "100%" }} disabled={busy || !pass || pass !== pass2} onClick={save}><Check size={15} />{busy ? "Guardando…" : "Actualizar contraseña"}</button>
+      </div>
+    </div></div></div>;
+}
 function Splash() {
   return <div className="nop-center"><div><div className="nop-logo-mark" style={{ width: 48, height: 48, margin: "0 auto 14px" }}><Crown size={24} /></div>Cargando panel…</div></div>;
 }
@@ -876,8 +910,8 @@ function OrderModal({ o, onClose, onDelete, hideProfit }) {
       <F k="Booster" v={o.booster_name || "Sin asignar"} />
       <F k="Medio de pago" v={o.payment} />
       {o.status === "completed" && <F k="Duración del servicio" v={svcDuration(o)} />}
-      <div style={{ display: "grid", gridTemplateColumns: hideProfit ? "1fr 1fr" : "1fr 1fr 1fr", gap: 10, margin: "14px 0", textAlign: "center" }}>
-        <S k="Precio" v={fmtARS(o.price)} c="var(--gold)" /><S k="Pago booster" v={fmtARS(o.booster_pay)} c="var(--cyan)" />
+      <div style={{ display: "grid", gridTemplateColumns: hideProfit ? "1fr" : "1fr 1fr 1fr", gap: 10, margin: "14px 0", textAlign: "center" }}>
+        {!hideProfit && <S k="Precio" v={fmtARS(o.price)} c="var(--gold)" />}<S k="Pago booster" v={fmtARS(o.booster_pay)} c="var(--cyan)" />
         {!hideProfit && <S k="Ganancia" v={fmtARS(o.profit)} c="var(--grn)" />}
       </div>
       {o.survey_rating && <div className="nop-card" style={{ padding: 14, background: "var(--bg2)" }}>
@@ -1238,6 +1272,13 @@ function BoosterMine({ profile, orders, reload, flash, notify }) {
     await notify(`Tu servicio #${o.id} fue finalizado. ¡Dejanos tu reseña!`, null, o.client_id, "done", "order", o.id);
     await reload(); flash(`Servicio #${o.id} finalizado`);
   };
+  const giveBack = async (o) => {
+    if (!window.confirm(`¿Devolver el servicio #${o.id}? Vuelve a "Trabajos disponibles" para que otro booster lo tome.`)) return;
+    await supabase.from("orders").update({ status: "available", booster_id: null, booster_name: null, booster_pay: null, profit: null, accepted_at: null }).eq("id", o.id);
+    await notify(`El servicio #${o.id} volvió a estar disponible.`, "booster", null, "new", "order", o.id);
+    await notify(`El booster devolvió el servicio #${o.id}. Volvió a la lista de disponibles.`, "admin", null, "new", "order", o.id);
+    await reload(); flash(`Servicio #${o.id} devuelto a disponibles`);
+  };
   return <>
     <div className="nop-sectionhead"><div><h1 className="nop-h1">Mis servicios</h1><p className="nop-sub">Lo que tenés en curso.</p></div></div>
     {mine.length === 0 ? <Empty icon={Swords} title="No tenés servicios activos" sub="Aceptá un trabajo desde la pestaña de disponibles." /> :
@@ -1263,7 +1304,10 @@ function BoosterMine({ profile, orders, reload, flash, notify }) {
             <Cred label="Contraseña" value={o.acct_pass} flash={flash} />
             <p className="nop-mini" style={{ marginTop: 10 }}>Jugá en modo offline. No las compartas con nadie.</p>
           </div>}
-          <button className="nop-btn nop-btn-grn" onClick={() => finish(o)}><Flag size={15} />Marcar finalizado</button>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <button className="nop-btn nop-btn-grn" onClick={() => finish(o)}><Flag size={15} />Marcar finalizado</button>
+            <button className="nop-btn nop-btn-ghost" onClick={() => giveBack(o)}><ArrowRight size={15} style={{ transform: "rotate(180deg)" }} />Devolver servicio</button>
+          </div>
         </div>))}</div>}
   </>;
 }
