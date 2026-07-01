@@ -44,6 +44,13 @@ function estimateDuo(cur, curD, tgt, tgtD, combo) {
 }
 const fmtARS = (n) => "$" + Math.round(n || 0).toLocaleString("es-AR");
 const fmtUSD = (n) => "US$" + (Math.round((n || 0) * 100) / 100).toLocaleString("es-AR");
+async function openReceipt(path) {
+  try {
+    const { data } = await supabase.storage.from("comprobantes").createSignedUrl(path, 120);
+    if (data?.signedUrl) window.open(data.signedUrl, "_blank");
+    else alert("No se pudo abrir el comprobante.");
+  } catch (e) { alert("No se pudo abrir el comprobante."); }
+}
 async function fetchBlue() {
   // Dólar blue (cotización informal) — bluelytics
   try {
@@ -876,7 +883,10 @@ function BulkImportModal({ profiles, reload, flash, onClose }) {
   const [rows, setRows] = useState(null);
   const [errors, setErrors] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [map, setMap] = useState({}); // nombreCSVnormalizado -> boosterId ("" = sin asignar)
+  const [names, setNames] = useState([]); // [{raw, norm}]
   const boosters = profiles.filter((p) => p.role === "booster");
+  const norm = (s) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
   const svcMap = { duoboost: "duoboost", coaching: "coaching", combo: "combo", eloboost: "eloboost", "duoboost+coaching": "combo" };
   const parseRank = (s) => {
     const parts = (s || "").trim().split(/\s+/);
@@ -896,36 +906,32 @@ function BulkImportModal({ profiles, reload, flash, onClose }) {
     const r = new FileReader();
     r.onload = () => {
       try {
-        const parsed = parseCSV(String(r.result));
+        const parsed = parseCSV(String(r.result).replace(/^\uFEFF/, ""));
         const head = parsed[0].map((h) => h.trim().toLowerCase());
         const idx = (name) => head.indexOf(name);
         const need = ["tipo_servicio", "liga_inicial", "liga_objetivo", "fecha", "pago_booster", "booster"];
         const missing = need.filter((n) => idx(n) < 0);
         if (missing.length) { setErrors(["Faltan columnas: " + missing.join(", ")]); setRows(null); return; }
-        const errs = []; const out = [];
+        const errs = []; const out = []; const nameSet = {};
         parsed.slice(1).forEach((r2, n) => {
-          const svcRaw = (r2[idx("tipo_servicio")] || "").trim().toLowerCase();
+          const svcRaw = (r2[idx("tipo_servicio")] || "").trim().toLowerCase().replace(/\s+/g, "");
           const service = svcMap[svcRaw];
           const [cr, cd] = parseRank(r2[idx("liga_inicial")]);
           const [tr, td] = parseRank(r2[idx("liga_objetivo")]);
           const fecha = parseDate(r2[idx("fecha")]);
           const pago = Number((r2[idx("pago_booster")] || "").replace(/[^\d.-]/g, ""));
           const bname = (r2[idx("booster")] || "").trim();
-          const b = boosters.find((x) => (x.full_name || "").toLowerCase() === bname.toLowerCase());
           if (!service) { errs.push(`Fila ${n + 2}: servicio inválido "${svcRaw}"`); return; }
           if (!fecha) { errs.push(`Fila ${n + 2}: fecha inválida`); return; }
           if (!pago) { errs.push(`Fila ${n + 2}: pago_booster inválido`); return; }
-          out.push({
-            client_id: null, client_name: "Histórico", client_discord: null,
-            service, cur_rank: cr, cur_div: cd, tgt_rank: tr, tgt_div: td, server: "LAS",
-            role_champ: "Carga histórica", price: pago, booster_pay: pago, profit: 0,
-            status: "completed", completed_at: fecha, accepted_at: fecha,
-            booster_id: b?.id || null, booster_name: b?.full_name || bname || "—",
-            booster_paid: true, booster_paid_ccy: "ars", currency: "ars",
-            _match: !!b, _bname: bname,
-          });
+          const nb = norm(bname); if (bname) nameSet[nb] = bname;
+          out.push({ service, cur_rank: cr, cur_div: cd, tgt_rank: tr, tgt_div: td, price: pago, fecha, bnorm: nb, bname });
         });
-        setErrors(errs); setRows(out);
+        // auto-mapeo por nombre normalizado
+        const distinct = Object.entries(nameSet).map(([nb, raw]) => ({ norm: nb, raw }));
+        const initMap = {};
+        distinct.forEach((d) => { const b = boosters.find((x) => norm(x.full_name) === d.norm); initMap[d.norm] = b?.id || ""; });
+        setNames(distinct); setMap(initMap); setErrors(errs); setRows(out);
       } catch (e) { setErrors(["No se pudo leer el archivo. ¿Es un CSV válido?"]); setRows(null); }
     };
     r.readAsText(file, "utf-8");
@@ -933,17 +939,36 @@ function BulkImportModal({ profiles, reload, flash, onClose }) {
   const doImport = async () => {
     if (!rows || !rows.length) return;
     setBusy(true);
-    const clean = rows.map(({ _match, _bname, ...o }) => o);
+    const clean = rows.map((o) => {
+      const bId = map[o.bnorm] || null;
+      const b = boosters.find((x) => x.id === bId);
+      return {
+        client_id: null, client_name: "Histórico", client_discord: null,
+        service: o.service, cur_rank: o.cur_rank, cur_div: o.cur_div, tgt_rank: o.tgt_rank, tgt_div: o.tgt_div, server: "LAS",
+        role_champ: "Carga histórica", price: o.price, booster_pay: o.price, profit: 0,
+        status: "completed", completed_at: o.fecha, accepted_at: o.fecha,
+        booster_id: bId, booster_name: b?.full_name || o.bname || "—",
+        booster_paid: true, booster_paid_ccy: "ars", currency: "ars",
+      };
+    });
     const { error } = await supabase.from("orders").insert(clean);
     setBusy(false);
     if (error) { flash("No se pudo importar. Revisá el archivo."); return; }
     await reload(); flash(`Se importaron ${clean.length} servicios.`); onClose();
   };
-  const unmatched = (rows || []).filter((r) => !r._match);
+  const wipeHistoric = async () => {
+    if (!window.confirm("¿Borrar TODOS los servicios cargados como 'Histórico'? Esto no toca los pedidos reales.")) return;
+    setBusy(true);
+    const { error } = await supabase.from("orders").delete().eq("client_name", "Histórico");
+    setBusy(false);
+    if (error) { flash("No se pudieron borrar."); return; }
+    await reload(); flash("Cargas históricas borradas.");
+  };
+  const assignedCount = (rows || []).filter((o) => map[o.bnorm]).length;
   return <div className="nop-modal" onClick={onClose}><div className="nop-card nop-modalbox" onClick={(e) => e.stopPropagation()}>
     <div className="hd"><h3>Carga masiva de servicios</h3><button className="nop-iconbtn" onClick={onClose}><X size={16} /></button></div>
     <div className="bd">
-      <p className="nop-mini" style={{ marginBottom: 12 }}>Subí un CSV con columnas: <b>tipo_servicio, liga_inicial, liga_objetivo, fecha, pago_booster, booster</b>. Ligas en formato "Oro IV". Fecha AAAA-MM-DD o DD/MM/AAAA. Se cargan como servicios finalizados y pagados, con cliente "Histórico".</p>
+      <p className="nop-mini" style={{ marginBottom: 12 }}>CSV con columnas: <b>tipo_servicio, liga_inicial, liga_objetivo, fecha, pago_booster, booster</b>. Ligas "Oro IV". Fecha AAAA-MM-DD o DD/MM/AAAA. Se cargan como finalizados y pagados, con cliente "Histórico".</p>
       <label className="nop-upload" style={{ marginBottom: 14 }}>
         <input type="file" accept=".csv,text/csv" onChange={onFile} style={{ display: "none" }} />
         <Upload size={18} /><span>Elegir archivo CSV</span>
@@ -953,12 +978,26 @@ function BulkImportModal({ profiles, reload, flash, onClose }) {
         {errors.length > 8 && <div className="nop-mini">…y {errors.length - 8} más</div>}
       </div>}
       {rows && rows.length > 0 && <>
+        <div style={{ marginBottom: 12 }}>
+          <b style={{ fontSize: 14 }}>Asigná cada nombre del CSV a un booster</b>
+          <p className="nop-mini" style={{ margin: "4px 0 10px" }}>Verificá que cada nombre quede vinculado. Si queda "— sin asignar —", el servicio se crea pero no aparece en el historial de ningún booster.</p>
+          {names.map((d) => <div key={d.norm} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+            <span style={{ flex: 1, fontSize: 13 }}>{d.raw}</span>
+            <ArrowRight size={13} style={{ color: "var(--mut2)" }} />
+            <select className="nop-select" style={{ width: 190 }} value={map[d.norm] || ""} onChange={(e) => setMap({ ...map, [d.norm]: e.target.value })}>
+              <option value="">— sin asignar —</option>
+              {boosters.map((b) => <option key={b.id} value={b.id}>{b.full_name}</option>)}
+            </select>
+          </div>)}
+        </div>
         <div className="nop-card" style={{ padding: 12, background: "var(--bg2)", marginBottom: 12 }}>
-          <b style={{ fontSize: 14 }}>{rows.length} servicios listos para importar</b>
-          {unmatched.length > 0 && <p className="nop-mini" style={{ color: "var(--amber)", marginTop: 6 }}>⚠️ {unmatched.length} no coinciden con ningún booster registrado (se cargan igual, pero no aparecerán en el historial de ese booster hasta que el nombre coincida): {[...new Set(unmatched.map((u) => u._bname))].join(", ")}</p>}
+          <b style={{ fontSize: 14 }}>{rows.length} servicios · {assignedCount} vinculados a un booster</b>
         </div>
         <button className="nop-btn nop-btn-gold" style={{ width: "100%" }} disabled={busy} onClick={doImport}><Check size={15} />{busy ? "Importando…" : `Importar ${rows.length} servicios`}</button>
       </>}
+      <div style={{ borderTop: "1px solid var(--line)", marginTop: 16, paddingTop: 12, textAlign: "center" }}>
+        <button className="nop-linkbtn" style={{ color: "var(--red)" }} disabled={busy} onClick={wipeHistoric}>Borrar servicios "Histórico" ya cargados</button>
+      </div>
     </div></div></div>;
 }
 
@@ -1051,6 +1090,7 @@ function OrderModal({ o, onClose, onDelete, hideProfit }) {
       <F k="Medio de pago" v={o.payment} />
       {o.status === "completed" && <F k="Duración del servicio" v={svcDuration(o)} />}
       {o.status === "completed" && <F k="Pago al booster" v={<span style={{ color: o.booster_paid ? "var(--grn)" : "var(--amber)", fontWeight: 700 }}>{o.booster_paid ? "Pago realizado ✓" : "Pago pendiente"}</span>} />}
+      {o.status === "completed" && o.booster_receipt_path && <button className="nop-btn nop-btn-ghost" style={{ width: "100%", margin: "8px 0 0" }} onClick={() => openReceipt(o.booster_receipt_path)}><Eye size={15} />Ver comprobante de pago</button>}
       <div style={{ display: "grid", gridTemplateColumns: hideProfit ? "1fr" : "1fr 1fr 1fr", gap: 10, margin: "14px 0", textAlign: "center" }}>
         {!hideProfit && <S k="Precio" v={fmtARS(o.price)} c="var(--gold)" />}<S k="Pago booster" v={fmtARS(o.booster_pay)} c="var(--cyan)" />
         {!hideProfit && <S k="Ganancia" v={fmtARS(o.profit)} c="var(--grn)" />}
@@ -1179,6 +1219,18 @@ function AdminFinance({ orders, profiles, flash }) {
   };
   const delAdjustment = async (id) => { await supabase.from("fin_adjustments").delete().eq("id", id); await load(); };
 
+  const uploadBoosterReceipt = async (o, file) => {
+    if (!file) return;
+    try {
+      const ext = (file.name.split(".").pop() || "dat").toLowerCase();
+      const path = `pagos/${o.booster_id || "sin"}/${o.id}.${ext}`;
+      const up = await supabase.storage.from("comprobantes").upload(path, file, { upsert: true });
+      if (up.error) throw up.error;
+      await supabase.from("orders").update({ booster_receipt_path: path, booster_paid: true, booster_paid_at: new Date().toISOString(), booster_paid_ccy: "ars" }).eq("id", o.id);
+      o.booster_receipt_path = path; o.booster_paid = true; setBusy((b) => b);
+      flash(`Comprobante adjuntado al #${o.id} y pago marcado.`);
+    } catch (e) { flash("No se pudo subir el comprobante."); }
+  };
   const togglePaid = async (o, paid) => {
     let ccy = "ars", usd = null;
     if (paid && o.currency === "usd") {
@@ -1292,7 +1344,12 @@ function AdminFinance({ orders, profiles, flash }) {
             <td><SvcTag s={o.service} /></td>
             <td>{o.currency === "usd" ? fmtUSD(o.usd_amount) : fmtARS(o.price)}</td>
             <td style={{ color: "var(--cyan)" }}>{fmtARS(o.booster_pay)}</td>
-            <td><button className={"nop-btn nop-btn-sm " + (o.booster_paid ? "nop-btn-grn" : "nop-btn-ghost")} onClick={() => togglePaid(o, !o.booster_paid)}>{o.booster_paid ? <><Check size={13} />Pagado</> : "Marcar pagado"}</button></td>
+            <td><div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+              <button className={"nop-btn nop-btn-sm " + (o.booster_paid ? "nop-btn-grn" : "nop-btn-ghost")} onClick={() => togglePaid(o, !o.booster_paid)}>{o.booster_paid ? <><Check size={13} />Pagado</> : "Marcar pagado"}</button>
+              {o.booster_receipt_path
+                ? <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => openReceipt(o.booster_receipt_path)}><Eye size={13} />Ver</button>
+                : <label className="nop-btn nop-btn-ghost nop-btn-sm" style={{ cursor: "pointer" }}><Upload size={13} />Adjuntar<input type="file" accept="image/*,application/pdf" style={{ display: "none" }} onChange={(e) => uploadBoosterReceipt(o, e.target.files?.[0])} /></label>}
+            </div></td>
           </tr>)}</tbody>
         </table></div>}
     </div>
