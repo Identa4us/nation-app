@@ -839,12 +839,16 @@ function AdminOrders({ orders, profiles, reload, flash, deleteOrder }) {
   const [f, setF] = useState("todos");
   const [q, setQ] = useState("");
   const [showImport, setShowImport] = useState(false);
+  const [showReports, setShowReports] = useState(false);
   let list = orders;
   if (f !== "todos") list = list.filter((o) => o.status === f);
   if (q) list = list.filter((o) => (o.client_name + (o.client_discord || "") + o.id).toLowerCase().includes(q.toLowerCase()));
   return <>
     <div className="nop-sectionhead"><div><h1 className="nop-h1">Pedidos</h1><p className="nop-sub">Todos los servicios, en cualquier estado.</p></div>
-      <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setShowImport(true)}><Upload size={14} />Carga masiva</button></div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setShowReports(true)}><FileText size={14} />Reportes</button>
+        <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setShowImport(true)}><Upload size={14} />Carga masiva</button>
+      </div></div>
     <div className="nop-card nop-panel" style={{ marginBottom: 14, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
       <div style={{ position: "relative", flex: 1, minWidth: 200 }}>
         <Search size={15} style={{ position: "absolute", left: 12, top: 12, color: "var(--mut2)" }} />
@@ -858,6 +862,7 @@ function AdminOrders({ orders, profiles, reload, flash, deleteOrder }) {
         : <OrdersTable orders={list} onDelete={deleteOrder} cols={["id", "cliente", "rank", "servicio", "booster", "precio", "pago", "ganancia", "estado"]} />}
     </div>
     {showImport && <BulkImportModal profiles={profiles || []} reload={reload} flash={flash} onClose={() => setShowImport(false)} />}
+    {showReports && <ReportsModal orders={orders} flash={flash} onClose={() => setShowReports(false)} />}
   </>;
 }
 
@@ -878,6 +883,71 @@ function parseCSV(text) {
   }
   if (field.length || row.length) { row.push(field); rows.push(row); }
   return rows.filter((r) => r.some((x) => (x || "").trim() !== ""));
+}
+function ReportsModal({ orders, flash, onClose }) {
+  const mKey = (d) => { if (!d) return null; const x = new Date(d); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0"); };
+  const mLabel = (k) => { const [y, m] = k.split("-"); return new Date(y, m - 1, 1).toLocaleDateString("es-AR", { month: "long", year: "numeric" }); };
+  const fmtDate = (d) => d ? new Date(d).toLocaleDateString("es-AR") : "";
+  const done = orders.filter((o) => o.status === "completed");
+  const months = useMemo(() => {
+    const s = new Set(); done.forEach((o) => { const k = mKey(o.completed_at || o.created_at); if (k) s.add(k); });
+    return Array.from(s).sort().reverse();
+  }, [orders]);
+  const [sel, setSel] = useState(months.length ? [months[0]] : []);
+  const toggle = (k) => setSel(sel.includes(k) ? sel.filter((x) => x !== k) : [...sel, k]);
+  const rows = done.filter((o) => sel.includes(mKey(o.completed_at || o.created_at))).sort((a, b) => new Date(a.completed_at || 0) - new Date(b.completed_at || 0));
+  const totPrice = rows.reduce((a, o) => a + Number(o.price || 0), 0);
+  const totPay = rows.reduce((a, o) => a + Number(o.booster_pay || 0), 0);
+  const totProfit = rows.reduce((a, o) => a + Number(o.profit || 0), 0);
+
+  const esc = (v) => { v = v == null ? "" : String(v); return /[";\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+  const download = () => {
+    if (!rows.length) { flash("No hay servicios en los meses elegidos."); return; }
+    const head = ["#", "Usuario", "Discord", "Servicio", "Liga inicial", "Liga objetivo", "Servidor", "Rol/Detalle", "Booster", "Fecha inicio", "Fecha fin", "Duración", "Estado pago", "Moneda", "Precio (ARS)", "Cobrado USD", "Pago booster (ARS)", "Ganancia (ARS)"];
+    const lines = [head.join(";")];
+    rows.forEach((o) => {
+      lines.push([
+        o.id, o.client_name, o.client_discord, SERVICES[o.service]?.label || o.service,
+        `${o.cur_rank || ""} ${o.cur_div || ""}`.trim(), `${o.tgt_rank || ""} ${o.tgt_div || ""}`.trim(),
+        o.server, o.role_champ, o.booster_name,
+        fmtDate(o.accepted_at), fmtDate(o.completed_at), svcDuration(o),
+        o.booster_paid ? "Pagado" : "Pendiente", (o.currency || "ars").toUpperCase(),
+        Math.round(o.price || 0), o.currency === "usd" ? (o.usd_amount || "") : "", Math.round(o.booster_pay || 0), Math.round(o.profit || 0),
+      ].map(esc).join(";"));
+    });
+    lines.push(""); lines.push(["", "", "", "", "", "", "", "", "", "", "", "", "", "TOTALES", Math.round(totPrice), "", Math.round(totPay), Math.round(totProfit)].map(esc).join(";"));
+    const csv = "\uFEFF" + lines.join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url;
+    a.download = `reporte-eloboost-${sel.slice().sort().join("_")}.csv`;
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    flash(`Reporte descargado (${rows.length} servicios).`);
+  };
+
+  return <div className="nop-modal" onClick={onClose}><div className="nop-card nop-modalbox" onClick={(e) => e.stopPropagation()}>
+    <div className="hd"><h3>Reporte de servicios</h3><button className="nop-iconbtn" onClick={onClose}><X size={16} /></button></div>
+    <div className="bd">
+      <p className="nop-mini" style={{ marginBottom: 12 }}>Elegí uno o varios meses. El reporte incluye todos los servicios finalizados con: booster, fechas de inicio y fin, estado de pago, precio, cobrado en USD, pago al booster y ganancia.</p>
+      {months.length === 0 ? <Empty icon={FileText} title="Sin servicios finalizados" sub="Todavía no hay datos para reportar." /> : <>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <b style={{ fontSize: 13 }}>Meses</b>
+          <button className="nop-linkbtn" onClick={() => setSel(sel.length === months.length ? [] : [...months])}>{sel.length === months.length ? "Ninguno" : "Todos"}</button>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
+          {months.map((k) => <label key={k} className="nop-card" style={{ padding: "10px 12px", background: sel.includes(k) ? "rgba(232,179,73,.12)" : "var(--bg2)", border: "1px solid " + (sel.includes(k) ? "var(--gold)" : "var(--line)"), cursor: "pointer", display: "flex", gap: 8, alignItems: "center", textTransform: "capitalize" }}>
+            <input type="checkbox" checked={sel.includes(k)} onChange={() => toggle(k)} />{mLabel(k)}
+          </label>)}
+        </div>
+        <div className="nop-card" style={{ padding: 14, background: "var(--bg2)", marginBottom: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}><span className="nop-mini">Servicios</span><b>{rows.length}</b></div>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}><span className="nop-mini">Facturado (ARS)</span><b style={{ color: "var(--gold)" }}>{fmtARS(totPrice)}</b></div>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}><span className="nop-mini">Pago a boosters</span><b style={{ color: "var(--cyan)" }}>{fmtARS(totPay)}</b></div>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}><span className="nop-mini">Ganancia</span><b style={{ color: "var(--grn)" }}>{fmtARS(totProfit)}</b></div>
+        </div>
+        <button className="nop-btn nop-btn-gold" style={{ width: "100%" }} disabled={!rows.length} onClick={download}><FileText size={15} />Descargar CSV ({rows.length} servicios)</button>
+      </>}
+    </div></div></div>;
 }
 function BulkImportModal({ profiles, reload, flash, onClose }) {
   const [rows, setRows] = useState(null);
