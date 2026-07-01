@@ -346,8 +346,15 @@ function Gate({ title, sub, logout }) {
 
 /* ===================== AUTH ===================== */
 function Auth() {
-  const [mode, setMode] = useState("login"); // login | signup | recover
-  const [role, setRole] = useState("cliente");
+  const boosterSignup = (() => {
+    try {
+      const p = new URLSearchParams(window.location.search).get("r");
+      const path = window.location.pathname.replace(/\/+$/, "");
+      return p === "booster" || path.endsWith("/booster") || window.location.hash === "#booster";
+    } catch (e) { return false; }
+  })();
+  const [mode, setMode] = useState(boosterSignup ? "signup" : "login"); // login | signup | recover
+  const [role, setRole] = useState(boosterSignup ? "booster" : "cliente");
   const [fullName, setName] = useState("");
   const [discord, setDiscord] = useState("");
   const [phone, setPhone] = useState("");
@@ -404,11 +411,11 @@ function Auth() {
     <div className="nop-auth"><div className="nop-authbox">
       <div className="nop-authhead">
         <img src="/logo.png" alt="Eloboost Nation" className="nop-authlogo" />
-        <h1 className="nop-display">Juega en la liga que realmente mereces</h1>
-        <p>{mode === "recover" ? title : "Registrate para solicitar tu servicio personalizado y seguilo en tiempo real."}</p>
+        <h1 className="nop-display">{boosterSignup ? "Sumate como booster" : "Juega en la liga que realmente mereces"}</h1>
+        <p>{boosterSignup ? "Completá tus datos para postularte. Un admin revisa y activa tu cuenta." : mode === "recover" ? title : "Registrate para solicitar tu servicio personalizado y seguilo en tiempo real."}</p>
       </div>
       <div className="nop-card" style={{ padding: 24 }}>
-        {mode !== "recover" && <div className="nop-authtabs">
+        {!boosterSignup && mode !== "recover" && <div className="nop-authtabs">
           <button className={"nop-authtab" + (mode === "login" ? " on" : "")} onClick={() => { setMode("login"); clear(); }}>Iniciar sesión</button>
           <button className={"nop-authtab" + (mode === "signup" ? " on" : "")} onClick={() => { setMode("signup"); clear(); }}>Crear cuenta</button>
         </div>}
