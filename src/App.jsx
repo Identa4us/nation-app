@@ -416,13 +416,6 @@ function Auth() {
         {ok && <div className="nop-ok">{ok}</div>}
 
         {mode === "signup" && <>
-          <div className="nop-field"><label>Quiero registrarme como</label>
-            <div className="nop-segwrap">
-              <button type="button" className={"nop-seg" + (role === "cliente" ? " on" : "")} onClick={() => setRole("cliente")}>Cliente</button>
-              <button type="button" className={"nop-seg" + (role === "booster" ? " on" : "")} onClick={() => setRole("booster")}>Booster</button>
-            </div>
-            <p className="nop-mini">{role === "booster" ? "Tu cuenta queda pendiente: un admin te acepta o rechaza." : "Tu pedido lo valida el admin antes de pasar a los boosters."}</p>
-          </div>
           <div className="nop-field"><label>Nombre o nick <span className="req">*</span></label>
             <input className="nop-input" value={fullName} onChange={(e) => setName(e.target.value)} placeholder="Ej: Alkioz" /></div>
           <div className="nop-row2">
@@ -894,6 +887,7 @@ function ReportsModal({ orders, flash, onClose }) {
     return Array.from(s).sort().reverse();
   }, [orders]);
   const [sel, setSel] = useState(months.length ? [months[0]] : []);
+  const [open, setOpen] = useState(false);
   const toggle = (k) => setSel(sel.includes(k) ? sel.filter((x) => x !== k) : [...sel, k]);
   const rows = done.filter((o) => sel.includes(mKey(o.completed_at || o.created_at))).sort((a, b) => new Date(a.completed_at || 0) - new Date(b.completed_at || 0));
   const totPrice = rows.reduce((a, o) => a + Number(o.price || 0), 0);
@@ -903,11 +897,11 @@ function ReportsModal({ orders, flash, onClose }) {
   const esc = (v) => { v = v == null ? "" : String(v); return /[";\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
   const download = () => {
     if (!rows.length) { flash("No hay servicios en los meses elegidos."); return; }
-    const head = ["#", "Usuario", "Discord", "Servicio", "Liga inicial", "Liga objetivo", "Servidor", "Rol/Detalle", "Booster", "Fecha inicio", "Fecha fin", "Duración", "Estado pago", "Moneda", "Precio (ARS)", "Cobrado USD", "Pago booster (ARS)", "Ganancia (ARS)"];
+    const head = ["#", "Usuario", "Discord", "Invocador", "Servicio", "Liga inicial", "Liga objetivo", "Servidor", "Rol/Detalle", "Booster", "Fecha inicio", "Fecha fin", "Duración", "Estado pago", "Moneda", "Precio (ARS)", "Cobrado USD", "Pago booster (ARS)", "Ganancia (ARS)"];
     const lines = [head.join(";")];
     rows.forEach((o) => {
       lines.push([
-        o.id, o.client_name, o.client_discord, SERVICES[o.service]?.label || o.service,
+        o.id, o.client_name, o.client_discord, o.summoner, SERVICES[o.service]?.label || o.service,
         `${o.cur_rank || ""} ${o.cur_div || ""}`.trim(), `${o.tgt_rank || ""} ${o.tgt_div || ""}`.trim(),
         o.server, o.role_champ, o.booster_name,
         fmtDate(o.accepted_at), fmtDate(o.completed_at), svcDuration(o),
@@ -915,7 +909,7 @@ function ReportsModal({ orders, flash, onClose }) {
         Math.round(o.price || 0), o.currency === "usd" ? (o.usd_amount || "") : "", Math.round(o.booster_pay || 0), Math.round(o.profit || 0),
       ].map(esc).join(";"));
     });
-    lines.push(""); lines.push(["", "", "", "", "", "", "", "", "", "", "", "", "", "TOTALES", Math.round(totPrice), "", Math.round(totPay), Math.round(totProfit)].map(esc).join(";"));
+    lines.push(""); lines.push(["", "", "", "", "", "", "", "", "", "", "", "", "", "", "TOTALES", Math.round(totPrice), "", Math.round(totPay), Math.round(totProfit)].map(esc).join(";"));
     const csv = "\uFEFF" + lines.join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -930,14 +924,19 @@ function ReportsModal({ orders, flash, onClose }) {
     <div className="bd">
       <p className="nop-mini" style={{ marginBottom: 12 }}>Elegí uno o varios meses. El reporte incluye todos los servicios finalizados con: booster, fechas de inicio y fin, estado de pago, precio, cobrado en USD, pago al booster y ganancia.</p>
       {months.length === 0 ? <Empty icon={FileText} title="Sin servicios finalizados" sub="Todavía no hay datos para reportar." /> : <>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-          <b style={{ fontSize: 13 }}>Meses</b>
-          <button className="nop-linkbtn" onClick={() => setSel(sel.length === months.length ? [] : [...months])}>{sel.length === months.length ? "Ninguno" : "Todos"}</button>
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
-          {months.map((k) => <label key={k} className="nop-card" style={{ padding: "10px 12px", background: sel.includes(k) ? "rgba(232,179,73,.12)" : "var(--bg2)", border: "1px solid " + (sel.includes(k) ? "var(--gold)" : "var(--line)"), cursor: "pointer", display: "flex", gap: 8, alignItems: "center", textTransform: "capitalize" }}>
-            <input type="checkbox" checked={sel.includes(k)} onChange={() => toggle(k)} />{mLabel(k)}
-          </label>)}
+        <div className="nop-field"><label>Meses a incluir</label>
+          <div style={{ position: "relative" }}>
+            <button type="button" className="nop-select" style={{ textAlign: "left", cursor: "pointer", width: "100%" }} onClick={() => setOpen((v) => !v)}>
+              {sel.length === 0 ? "Elegí uno o más meses…" : sel.length === months.length ? "Todos los meses" : `${sel.length} ${sel.length === 1 ? "mes seleccionado" : "meses seleccionados"}`}
+              <ChevronRight size={15} style={{ float: "right", transform: open ? "rotate(90deg)" : "none", transition: ".2s" }} />
+            </button>
+            {open && <div className="nop-card" style={{ position: "absolute", zIndex: 5, top: "calc(100% + 6px)", left: 0, right: 0, maxHeight: 240, overflowY: "auto", padding: 8, boxShadow: "0 10px 30px rgba(0,0,0,.4)" }}>
+              <label style={{ display: "flex", gap: 8, alignItems: "center", padding: "8px 10px", cursor: "pointer", borderBottom: "1px solid var(--line)", fontWeight: 700, fontSize: 13, textTransform: "none" }}>
+                <input type="checkbox" checked={sel.length === months.length} onChange={() => setSel(sel.length === months.length ? [] : [...months])} /> Todos los meses</label>
+              {months.map((k) => <label key={k} style={{ display: "flex", gap: 8, alignItems: "center", padding: "8px 10px", cursor: "pointer", textTransform: "capitalize", fontSize: 13 }}>
+                <input type="checkbox" checked={sel.includes(k)} onChange={() => toggle(k)} /> {mLabel(k)}</label>)}
+            </div>}
+          </div>
         </div>
         <div className="nop-card" style={{ padding: 14, background: "var(--bg2)", marginBottom: 14 }}>
           <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}><span className="nop-mini">Servicios</span><b>{rows.length}</b></div>
@@ -1150,6 +1149,7 @@ function OrderModal({ o, onClose, onDelete, hideProfit }) {
       <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}><SvcTag s={o.service} /><StatusBadge s={o.status} /></div>
       <F k="Usuario" v={o.client_name || "—"} />
       <F k="Discord" v={o.client_discord || "—"} />
+      {o.summoner && <F k="Invocador" v={o.summoner} />}
       <F k="Recorrido" v={<RankPath o={o} />} />
       <F k="Servidor / LP" v={`${o.server} · ${o.lp || "—"}`} />
       {o.role_champ && <F k="Rol / detalle" v={o.role_champ} />}
@@ -1560,7 +1560,7 @@ function BoosterMine({ profile, orders, reload, flash, notify }) {
           </div>
           <div className="nop-discordbox" style={{ marginBottom: 14 }}>
             <div className="ic"><MessageCircle size={19} /></div>
-            <div style={{ flex: 1 }}><b style={{ fontSize: 13 }}>Coordiná con {o.client_name} ({o.client_discord})</b><div className="nop-mini">Sala sugerida: <b style={{ color: "var(--tx)" }}>#pedido-{o.id}</b></div></div>
+            <div style={{ flex: 1 }}><b style={{ fontSize: 13 }}>Coordiná con {o.client_name} ({o.client_discord})</b><div className="nop-mini">{o.summoner ? <>Invocador: <b style={{ color: "var(--tx)" }}>{o.summoner}</b> · </> : ""}Sala sugerida: <b style={{ color: "var(--tx)" }}>#pedido-{o.id}</b></div></div>
             <a className="nop-btn nop-btn-sm nop-btn-ghost" href={DISCORD_INVITE} target="_blank" rel="noreferrer">Abrir Discord</a>
           </div>
           {(o.pref_days || o.pref_times) && <div className="nop-mini" style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
@@ -1703,6 +1703,7 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
   const [champOn, setChampOn] = useState(false), [champName, setChampName] = useState("");
   const [express, setExpress] = useState(false);
   const [acctUser, setAcctUser] = useState(""), [acctPass, setAcctPass] = useState("");
+  const [summoner, setSummoner] = useState("");
   const [accepted, setAccepted] = useState(false);
   const [currency, setCurrency] = useState("ars"); // ars | usd
   const [blue, setBlue] = useState(null);
@@ -1752,6 +1753,7 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
 
   const submit = async () => {
     if (!file) { flash("Subí el comprobante de pago para continuar."); return; }
+    if (!isElo && !summoner.trim()) { flash("Ingresá tu nombre de invocador."); return; }
     if (isElo && (!acctUser || !acctPass)) { flash("Ingresá el usuario y la contraseña de la cuenta."); return; }
     if (isElo && !accepted) { flash("Tenés que aceptar los términos y condiciones."); return; }
     setBusy(true);
@@ -1773,6 +1775,7 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
         receipt_path: path,
         pref_days: isElo ? null : days.join(", "), pref_times: isElo ? null : times.join(", "),
         acct_user: isElo ? acctUser : null, acct_pass: isElo ? acctPass : null,
+        summoner: isElo ? acctUser : summoner,
         currency, usd_amount: usdAmt, fx_rate: fxRate,
       };
       const { data: created, error } = await supabase.from("orders").insert(row).select("id").single();
@@ -1894,6 +1897,9 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
           </div>
         )}
 
+        {!isElo && <div className="nop-field"><label>Nombre de invocador <span className="req">*</span></label>
+          <input className="nop-input" value={summoner} onChange={(e) => setSummoner(e.target.value)} placeholder="Tu nombre de invocador en LoL" /></div>}
+
         <label style={{ fontSize: 12, fontWeight: 600, color: "var(--mut)", display: "block", margin: "4px 0 10px" }}>5 · Subí el comprobante <span className="req">*</span></label>
         <label className="nop-upload">
           <input type="file" accept="image/*,application/pdf" style={{ display: "none" }} onChange={(e) => setFile(e.target.files?.[0] || null)} />
@@ -1924,7 +1930,7 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
 
         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 20 }}>
           <button className="nop-btn nop-btn-ghost" onClick={() => setStep(1)}>← Volver</button>
-          <button className="nop-btn nop-btn-gold" disabled={busy || !file || (isElo && (!accepted || !acctUser || !acctPass))} onClick={submit}><Check size={15} />{busy ? "Enviando…" : "Enviar pedido"}</button>
+          <button className="nop-btn nop-btn-gold" disabled={busy || !file || (!isElo && !summoner.trim()) || (isElo && (!accepted || !acctUser || !acctPass))} onClick={submit}><Check size={15} />{busy ? "Enviando…" : "Enviar pedido"}</button>
         </div>
       </>}
     </div>
