@@ -271,7 +271,24 @@ export default function App() {
 
 function ProfileModal({ profile, onClose, flash }) {
   const [pass, setPass] = useState(""), [pass2, setPass2] = useState(""), [busy, setBusy] = useState(false);
+  const [email, setEmail] = useState(profile.email || "");
+  const [cbu, setCbu] = useState(profile.cbu || "");
   const roleLabel = profile.role === "admin" ? "Administrador" : profile.role === "booster" ? "Booster" : "Cliente";
+  const saveInfo = async () => {
+    setBusy(true);
+    try {
+      if (cbu !== (profile.cbu || "")) {
+        const { error } = await supabase.from("profiles").update({ cbu }).eq("id", profile.id);
+        if (error) throw error;
+      }
+      if (email && email !== profile.email) {
+        const { error } = await supabase.auth.updateUser({ email });
+        if (error) throw error;
+        flash("Te enviamos un mail para confirmar el nuevo correo.");
+      } else { flash("Datos actualizados."); }
+    } catch (e) { flash("No se pudieron actualizar los datos."); }
+    setBusy(false);
+  };
   const save = async () => {
     if (pass.length < 6) { flash("La contraseña debe tener al menos 6 caracteres."); return; }
     if (pass !== pass2) { flash("Las contraseñas no coinciden."); return; }
@@ -289,9 +306,16 @@ function ProfileModal({ profile, onClose, flash }) {
         <span className="nop-avatar" style={{ width: 44, height: 44, fontSize: 18, background: "var(--gold)" }}>{(profile.full_name || "?")[0]?.toUpperCase()}</span>
         <div><b style={{ fontSize: 15 }}>{profile.full_name || "—"}</b><div className="nop-mini">{roleLabel}</div></div>
       </div>
-      <F k="Email" v={profile.email} />
       {profile.discord && <F k="Discord" v={profile.discord} />}
       {profile.phone && <F k="Teléfono" v={profile.phone} />}
+
+      <div style={{ marginTop: 16 }}>
+        <div className="nop-panel-h"><UserCheck size={15} style={{ color: "var(--cyan)" }} />Mis datos</div>
+        <div className="nop-field"><label>Email</label><input className="nop-input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></div>
+        {profile.role === "booster" && <div className="nop-field"><label>CBU / Alias para cobrar</label><input className="nop-input" value={cbu} onChange={(e) => setCbu(e.target.value)} placeholder="Tu CBU o alias" /></div>}
+        <button className="nop-btn nop-btn-ghost" style={{ width: "100%" }} disabled={busy} onClick={saveInfo}><Check size={15} />Guardar datos</button>
+      </div>
+
       <div style={{ marginTop: 18 }}>
         <div className="nop-panel-h"><Shield size={15} style={{ color: "var(--gold)" }} />Cambiar contraseña</div>
         <div className="nop-field"><label>Nueva contraseña</label><input className="nop-input" type="password" value={pass} onChange={(e) => setPass(e.target.value)} placeholder="••••••••" /></div>
@@ -320,6 +344,7 @@ function Auth() {
   const [fullName, setName] = useState("");
   const [discord, setDiscord] = useState("");
   const [phone, setPhone] = useState("");
+  const [cbu, setCbu] = useState("");
   const [email, setEmail] = useState("");
   const [pass, setPass] = useState("");
   const [pass2, setPass2] = useState("");
@@ -337,10 +362,11 @@ function Auth() {
       } else if (mode === "signup") {
         if (!fullName) throw new Error("Ingresá tu nombre.");
         if (!phone) throw new Error("Ingresá tu teléfono.");
+        if (role === "booster" && !cbu) throw new Error("Ingresá tu CBU o alias para cobrar.");
         if (pass !== pass2) throw new Error("Las contraseñas no coinciden.");
         const { data, error } = await supabase.auth.signUp({
           email, password: pass,
-          options: { data: { full_name: fullName, role, discord, phone } },
+          options: { data: { full_name: fullName, role, discord, phone, cbu } },
         });
         if (error) throw error;
         if (role === "booster") {
@@ -398,6 +424,8 @@ function Auth() {
             <div className="nop-field"><label>Discord</label>
               <input className="nop-input" value={discord} onChange={(e) => setDiscord(e.target.value)} placeholder="usuario#0000" /></div>
           </div>
+          {role === "booster" && <div className="nop-field"><label>CBU / Alias para cobrar <span className="req">*</span></label>
+            <input className="nop-input" value={cbu} onChange={(e) => setCbu(e.target.value)} placeholder="Tu CBU o alias de Mercado Pago / banco" /></div>}
         </>}
 
         <div className="nop-field"><label>Email <span className="req">*</span></label>
@@ -800,14 +828,16 @@ function AdminDash({ orders, profiles }) {
     </div>
   </>;
 }
-function AdminOrders({ orders, reload, flash, deleteOrder }) {
+function AdminOrders({ orders, profiles, reload, flash, deleteOrder }) {
   const [f, setF] = useState("todos");
   const [q, setQ] = useState("");
+  const [showImport, setShowImport] = useState(false);
   let list = orders;
   if (f !== "todos") list = list.filter((o) => o.status === f);
   if (q) list = list.filter((o) => (o.client_name + (o.client_discord || "") + o.id).toLowerCase().includes(q.toLowerCase()));
   return <>
-    <div className="nop-sectionhead"><div><h1 className="nop-h1">Pedidos</h1><p className="nop-sub">Todos los servicios, en cualquier estado.</p></div></div>
+    <div className="nop-sectionhead"><div><h1 className="nop-h1">Pedidos</h1><p className="nop-sub">Todos los servicios, en cualquier estado.</p></div>
+      <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setShowImport(true)}><Upload size={14} />Carga masiva</button></div>
     <div className="nop-card nop-panel" style={{ marginBottom: 14, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
       <div style={{ position: "relative", flex: 1, minWidth: 200 }}>
         <Search size={15} style={{ position: "absolute", left: 12, top: 12, color: "var(--mut2)" }} />
@@ -820,7 +850,116 @@ function AdminOrders({ orders, reload, flash, deleteOrder }) {
       {list.length === 0 ? <Empty icon={Hash} title="Sin resultados" sub="Probá con otro filtro." />
         : <OrdersTable orders={list} onDelete={deleteOrder} cols={["id", "cliente", "rank", "servicio", "booster", "precio", "pago", "ganancia", "estado"]} />}
     </div>
+    {showImport && <BulkImportModal profiles={profiles || []} reload={reload} flash={flash} onClose={() => setShowImport(false)} />}
   </>;
+}
+
+function parseCSV(text) {
+  const rows = []; let i = 0, field = "", row = [], inQ = false;
+  text = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  while (i < text.length) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"' && text[i + 1] === '"') { field += '"'; i += 2; continue; }
+      if (c === '"') { inQ = false; i++; continue; }
+      field += c; i++; continue;
+    }
+    if (c === '"') { inQ = true; i++; continue; }
+    if (c === ",") { row.push(field); field = ""; i++; continue; }
+    if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; i++; continue; }
+    field += c; i++;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter((r) => r.some((x) => (x || "").trim() !== ""));
+}
+function BulkImportModal({ profiles, reload, flash, onClose }) {
+  const [rows, setRows] = useState(null);
+  const [errors, setErrors] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const boosters = profiles.filter((p) => p.role === "booster");
+  const svcMap = { duoboost: "duoboost", coaching: "coaching", combo: "combo", eloboost: "eloboost", "duoboost+coaching": "combo" };
+  const parseRank = (s) => {
+    const parts = (s || "").trim().split(/\s+/);
+    const rank = RANKS.find((r) => r.toLowerCase() === (parts[0] || "").toLowerCase()) || parts[0] || "";
+    const div = (parts[1] || "IV").toUpperCase();
+    return [rank, DIVS.includes(div) ? div : "IV"];
+  };
+  const parseDate = (s) => {
+    s = (s || "").trim(); if (!s) return null;
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return new Date(s).toISOString();
+    const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+    if (m) { let [_, d, mo, y] = m; if (y.length === 2) y = "20" + y; return new Date(`${y}-${mo.padStart(2, "0")}-${d.padStart(2, "0")}`).toISOString(); }
+    return null;
+  };
+  const onFile = (e) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    const r = new FileReader();
+    r.onload = () => {
+      try {
+        const parsed = parseCSV(String(r.result));
+        const head = parsed[0].map((h) => h.trim().toLowerCase());
+        const idx = (name) => head.indexOf(name);
+        const need = ["tipo_servicio", "liga_inicial", "liga_objetivo", "fecha", "pago_booster", "booster"];
+        const missing = need.filter((n) => idx(n) < 0);
+        if (missing.length) { setErrors(["Faltan columnas: " + missing.join(", ")]); setRows(null); return; }
+        const errs = []; const out = [];
+        parsed.slice(1).forEach((r2, n) => {
+          const svcRaw = (r2[idx("tipo_servicio")] || "").trim().toLowerCase();
+          const service = svcMap[svcRaw];
+          const [cr, cd] = parseRank(r2[idx("liga_inicial")]);
+          const [tr, td] = parseRank(r2[idx("liga_objetivo")]);
+          const fecha = parseDate(r2[idx("fecha")]);
+          const pago = Number((r2[idx("pago_booster")] || "").replace(/[^\d.-]/g, ""));
+          const bname = (r2[idx("booster")] || "").trim();
+          const b = boosters.find((x) => (x.full_name || "").toLowerCase() === bname.toLowerCase());
+          if (!service) { errs.push(`Fila ${n + 2}: servicio inválido "${svcRaw}"`); return; }
+          if (!fecha) { errs.push(`Fila ${n + 2}: fecha inválida`); return; }
+          if (!pago) { errs.push(`Fila ${n + 2}: pago_booster inválido`); return; }
+          out.push({
+            client_id: null, client_name: "Histórico", client_discord: null,
+            service, cur_rank: cr, cur_div: cd, tgt_rank: tr, tgt_div: td, server: "LAS",
+            role_champ: "Carga histórica", price: pago, booster_pay: pago, profit: 0,
+            status: "completed", completed_at: fecha, accepted_at: fecha,
+            booster_id: b?.id || null, booster_name: b?.full_name || bname || "—",
+            booster_paid: true, booster_paid_ccy: "ars", currency: "ars",
+            _match: !!b, _bname: bname,
+          });
+        });
+        setErrors(errs); setRows(out);
+      } catch (e) { setErrors(["No se pudo leer el archivo. ¿Es un CSV válido?"]); setRows(null); }
+    };
+    r.readAsText(file, "utf-8");
+  };
+  const doImport = async () => {
+    if (!rows || !rows.length) return;
+    setBusy(true);
+    const clean = rows.map(({ _match, _bname, ...o }) => o);
+    const { error } = await supabase.from("orders").insert(clean);
+    setBusy(false);
+    if (error) { flash("No se pudo importar. Revisá el archivo."); return; }
+    await reload(); flash(`Se importaron ${clean.length} servicios.`); onClose();
+  };
+  const unmatched = (rows || []).filter((r) => !r._match);
+  return <div className="nop-modal" onClick={onClose}><div className="nop-card nop-modalbox" onClick={(e) => e.stopPropagation()}>
+    <div className="hd"><h3>Carga masiva de servicios</h3><button className="nop-iconbtn" onClick={onClose}><X size={16} /></button></div>
+    <div className="bd">
+      <p className="nop-mini" style={{ marginBottom: 12 }}>Subí un CSV con columnas: <b>tipo_servicio, liga_inicial, liga_objetivo, fecha, pago_booster, booster</b>. Ligas en formato "Oro IV". Fecha AAAA-MM-DD o DD/MM/AAAA. Se cargan como servicios finalizados y pagados, con cliente "Histórico".</p>
+      <label className="nop-upload" style={{ marginBottom: 14 }}>
+        <input type="file" accept=".csv,text/csv" onChange={onFile} style={{ display: "none" }} />
+        <Upload size={18} /><span>Elegir archivo CSV</span>
+      </label>
+      {errors.length > 0 && <div className="nop-card" style={{ padding: 12, background: "rgba(248,113,113,.08)", border: "1px solid rgba(248,113,113,.3)", marginBottom: 12 }}>
+        {errors.slice(0, 8).map((e, i) => <div key={i} className="nop-mini" style={{ color: "#f87171" }}>{e}</div>)}
+        {errors.length > 8 && <div className="nop-mini">…y {errors.length - 8} más</div>}
+      </div>}
+      {rows && rows.length > 0 && <>
+        <div className="nop-card" style={{ padding: 12, background: "var(--bg2)", marginBottom: 12 }}>
+          <b style={{ fontSize: 14 }}>{rows.length} servicios listos para importar</b>
+          {unmatched.length > 0 && <p className="nop-mini" style={{ color: "var(--amber)", marginTop: 6 }}>⚠️ {unmatched.length} no coinciden con ningún booster registrado (se cargan igual, pero no aparecerán en el historial de ese booster hasta que el nombre coincida): {[...new Set(unmatched.map((u) => u._bname))].join(", ")}</p>}
+        </div>
+        <button className="nop-btn nop-btn-gold" style={{ width: "100%" }} disabled={busy} onClick={doImport}><Check size={15} />{busy ? "Importando…" : `Importar ${rows.length} servicios`}</button>
+      </>}
+    </div></div></div>;
 }
 
 function AdminBoosters({ orders, profiles, reload, flash }) {
@@ -900,7 +1039,8 @@ function OrderModal({ o, onClose, onDelete, hideProfit }) {
     <div className="hd"><h3>Pedido #{o.id}</h3><button className="nop-iconbtn" onClick={onClose}><X size={16} /></button></div>
     <div className="bd">
       <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}><SvcTag s={o.service} /><StatusBadge s={o.status} /></div>
-      <F k="Cliente" v={`${o.client_name} · ${o.client_discord || ""}`} />
+      <F k="Usuario" v={o.client_name || "—"} />
+      <F k="Discord" v={o.client_discord || "—"} />
       <F k="Recorrido" v={<RankPath o={o} />} />
       <F k="Servidor / LP" v={`${o.server} · ${o.lp || "—"}`} />
       {o.role_champ && <F k="Rol / detalle" v={o.role_champ} />}
@@ -910,6 +1050,7 @@ function OrderModal({ o, onClose, onDelete, hideProfit }) {
       <F k="Booster" v={o.booster_name || "Sin asignar"} />
       <F k="Medio de pago" v={o.payment} />
       {o.status === "completed" && <F k="Duración del servicio" v={svcDuration(o)} />}
+      {o.status === "completed" && <F k="Pago al booster" v={<span style={{ color: o.booster_paid ? "var(--grn)" : "var(--amber)", fontWeight: 700 }}>{o.booster_paid ? "Pago realizado ✓" : "Pago pendiente"}</span>} />}
       <div style={{ display: "grid", gridTemplateColumns: hideProfit ? "1fr" : "1fr 1fr 1fr", gap: 10, margin: "14px 0", textAlign: "center" }}>
         {!hideProfit && <S k="Precio" v={fmtARS(o.price)} c="var(--gold)" />}<S k="Pago booster" v={fmtARS(o.booster_pay)} c="var(--cyan)" />
         {!hideProfit && <S k="Ganancia" v={fmtARS(o.profit)} c="var(--grn)" />}
@@ -922,7 +1063,7 @@ function OrderModal({ o, onClose, onDelete, hideProfit }) {
 }
 
 /* ===================== CONTABLE (ADMIN) ===================== */
-function AdminFinance({ orders, flash }) {
+function AdminFinance({ orders, profiles, flash }) {
   const mKey = (d) => { if (!d) return null; const x = new Date(d); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0"); };
   const mLabel = (k) => { if (!k || k === "all") return "Todo el histórico"; const [y, m] = k.split("-"); return new Date(y, m - 1, 1).toLocaleDateString("es-AR", { month: "long", year: "numeric" }); };
   const thisMonth = mKey(new Date());
@@ -1144,9 +1285,11 @@ function AdminFinance({ orders, flash }) {
       <div className="nop-panel-h"><Swords size={15} style={{ color: "var(--cyan)" }} />Pagos a boosters · {mLabel(month)} <span className="nop-mini" style={{ marginLeft: "auto", fontWeight: 400 }}>Deuda pendiente: <b style={{ color: "var(--amber)" }}>{fmtARS(boostersDeuda)}</b></span></div>
       {monthDone.length === 0 ? <Empty icon={Wallet} title="Sin servicios este mes" sub="Cuando se completen servicios, los pagos aparecen acá." /> :
         <div className="nop-tablewrap"><table className="nop-t">
-          <thead><tr><th>#</th><th>Booster</th><th>Servicio</th><th>Cobro</th><th>Pago booster</th><th>Estado</th></tr></thead>
+          <thead><tr><th>#</th><th>Booster</th><th>Alias / CBU</th><th>Servicio</th><th>Cobro</th><th>Pago booster</th><th>Estado</th></tr></thead>
           <tbody>{monthDone.map((o) => <tr key={o.id}>
-            <td>#{o.id}</td><td>{o.booster_name || "—"}</td><td><SvcTag s={o.service} /></td>
+            <td>#{o.id}</td><td>{o.booster_name || "—"}</td>
+            <td className="nop-mini">{(profiles || []).find((p) => p.id === o.booster_id)?.cbu || "—"}</td>
+            <td><SvcTag s={o.service} /></td>
             <td>{o.currency === "usd" ? fmtUSD(o.usd_amount) : fmtARS(o.price)}</td>
             <td style={{ color: "var(--cyan)" }}>{fmtARS(o.booster_pay)}</td>
             <td><button className={"nop-btn nop-btn-sm " + (o.booster_paid ? "nop-btn-grn" : "nop-btn-ghost")} onClick={() => togglePaid(o, !o.booster_paid)}>{o.booster_paid ? <><Check size={13} />Pagado</> : "Marcar pagado"}</button></td>
@@ -1437,7 +1580,6 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
   const [currency, setCurrency] = useState("ars"); // ars | usd
   const [blue, setBlue] = useState(null);
   useEffect(() => { if (currency === "usd" && !blue) fetchBlue().then(setBlue); }, [currency]);
-  const usdAmount = blue ? Math.round((price / blue) * 100) / 100 : null;
   const [file, setFile] = useState(null);
   const [busy, setBusy] = useState(false);
   const isCoaching = service === "coaching";
@@ -1463,6 +1605,7 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
     }
     return estimateDuo(cur, curD, tgt, tgtD, service === "combo");
   }, [service, cur, curD, tgt, tgtD, games, isCoaching, isElo, rolOn, eloRoles, champOn, express, lp]);
+  const usdAmount = blue ? Math.round((price / blue) * 100) / 100 : null;
   const SvcIc = ({ k }) => { const Ic = SERVICES[k].icon; return <Ic size={19} />; };
   const copy = (t) => { try { navigator.clipboard.writeText(t); flash("Copiado: " + t); } catch (e) { flash("Copiá manualmente: " + t); } };
 
