@@ -4,7 +4,7 @@ import {
   Flag, Star, Users, TrendingUp, Wallet, Activity, ChevronRight, Trophy, MessageCircle,
   Search, X, ArrowRight, Crown, Zap, Hash, UserCheck, ShieldCheck, Trash2, Send,
   LifeBuoy, Copy, Eye, EyeOff, Upload, FileText, Gamepad2, Plus as PlusIc, Power, Headset, Phone, CalendarDays,
-  Settings, RefreshCw, Banknote,
+  Settings, RefreshCw, Banknote, Tag,
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import { supabase } from "./supabaseClient";
@@ -597,6 +597,7 @@ function Tabs({ role, tab, setTab, orders, profiles }) {
       {T("dash", "Dashboard", Activity)}
       {T("orders", "Pedidos", Hash)}
       {T("users", "Usuarios", Users)}
+      {T("promos", "Promos", Tag)}
       {T("finance", "Contable", Wallet)}
       {T("accounts", "Cuentas", Gamepad2)}
     </div>;
@@ -644,6 +645,7 @@ function AdminViews({ tab, setTab, ...ctx }) {
   if (tab === "dash") return <AdminDash {...ctx} />;
   if (tab === "orders") return <AdminOrders {...ctx} />;
   if (tab === "users") return <AdminUsers {...ctx} />;
+  if (tab === "promos") return <AdminPromos {...ctx} />;
   if (tab === "finance") return <AdminFinance {...ctx} />;
   if (tab === "accounts") return <AdminAccounts {...ctx} />;
   return <AdminValidate {...ctx} />;
@@ -1834,6 +1836,27 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
   useEffect(() => { if (currency === "usd" && !blue) fetchBlue().then(setBlue); }, [currency]);
   const [file, setFile] = useState(null);
   const [busy, setBusy] = useState(false);
+  // Codigo promocional
+  const [promoInput, setPromoInput] = useState("");
+  const [promo, setPromo] = useState(null);         // objeto del promo validado o null
+  const [promoErr, setPromoErr] = useState("");
+  const [promoBusy, setPromoBusy] = useState(false);
+  const applyPromo = async () => {
+    setPromoErr("");
+    const code = promoInput.trim();
+    if (!code) { setPromoErr("Ingresá un código."); return; }
+    setPromoBusy(true);
+    try {
+      const { data, error } = await supabase.rpc("validate_promo_code", { p_code: code });
+      if (error) throw error;
+      const row = Array.isArray(data) ? data[0] : data;
+      if (!row) { setPromo(null); setPromoErr("Ese código no existe, venció o está desactivado."); }
+      else { setPromo(row); setPromoErr(""); flash(`Código ${row.code} aplicado`); }
+    } catch (e) {
+      setPromoErr("No se pudo validar el código. Reintentá.");
+    } finally { setPromoBusy(false); }
+  };
+  const removePromo = () => { setPromo(null); setPromoInput(""); setPromoErr(""); };
   const isCoaching = service === "coaching";
   const isElo = service === "eloboost";
   const curPos = rankPos(cur, curD);
@@ -1846,31 +1869,50 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
   const lpSurcharge = lp === "+15" ? 1.1 : 1; // +15 LP = +10%
 
   const priceBoth = useMemo(() => {
+    let base;
     if (isCoaching) {
       // coaching: precio fijo en ARS; USD se sigue convirtiendo con el blue (spec del user)
       const ars = COACHING_PRICE[games];
       const usd = blue ? Math.round((ars / blue) * 100) / 100 : null;
-      return { ars, usd };
+      base = { ars, usd };
+    } else {
+      // precio base (suma por división)
+      let { ars, usd } = estimateBase(cur, curD, tgt, tgtD);
+      // multiplicadores ADITIVOS sobre el base (no compuestos)
+      let mult = 0;
+      if (service === "duoboost") mult += 0.50;                        // DuoBoost = +50%
+      if (service === "combo") mult += 1.00;                           // Combo (Duo + Coaching Live) = +100%
+      if (isElo) {
+        if (lp === "+15") mult += 0.10;                                // LP +15 = +10%
+        if (rolOn && eloRoles.length) mult += 0.30;                    // Rol específico = +30%
+        if (champOn) mult += 0.50;                                     // Campeón específico = +50%
+        if (express) mult += 0.20;                                     // Express = +20%
+      }
+      base = {
+        ars: Math.round((ars * (1 + mult)) / 100) * 100,               // redondeo a centena
+        usd: Math.round((usd * (1 + mult)) * 100) / 100,               // 2 decimales
+      };
     }
-    // precio base (suma por división)
-    let { ars, usd } = estimateBase(cur, curD, tgt, tgtD);
-    // multiplicadores ADITIVOS sobre el base (no compuestos)
-    let mult = 0;
-    if (service === "duoboost") mult += 0.50;                        // DuoBoost = +50%
-    if (service === "combo") mult += 1.00;                           // Combo (Duo + Coaching Live) = +100%
-    if (isElo) {
-      if (lp === "+15") mult += 0.10;                                // LP +15 = +10%
-      if (rolOn && eloRoles.length) mult += 0.30;                    // Rol específico = +30%
-      if (champOn) mult += 0.50;                                     // Campeón específico = +50%
-      if (express) mult += 0.20;                                     // Express = +20%
+    // aplicar descuento del promo (si hay uno validado)
+    let discArs = 0, discUsd = 0;
+    if (promo) {
+      if (promo.discount_type === "percent" && promo.discount_percent) {
+        discArs = Math.round((base.ars * Number(promo.discount_percent) / 100) / 100) * 100;
+        discUsd = Math.round((base.usd * Number(promo.discount_percent) / 100) * 100) / 100;
+      } else if (promo.discount_type === "amount") {
+        discArs = Math.min(base.ars, Number(promo.discount_ars) || 0);
+        discUsd = Math.min(base.usd || 0, Number(promo.discount_usd) || 0);
+      }
     }
-    ars = ars * (1 + mult);
-    usd = usd * (1 + mult);
     return {
-      ars: Math.round(ars / 100) * 100,                              // redondeo a centena
-      usd: Math.round(usd * 100) / 100,                              // 2 decimales
+      arsBase: base.ars,
+      usdBase: base.usd,
+      arsDisc: discArs,
+      usdDisc: discUsd,
+      ars: Math.max(0, base.ars - discArs),
+      usd: base.usd != null ? Math.max(0, base.usd - discUsd) : null,
     };
-  }, [service, cur, curD, tgt, tgtD, games, isCoaching, isElo, rolOn, eloRoles, champOn, express, lp, blue]);
+  }, [service, cur, curD, tgt, tgtD, games, isCoaching, isElo, rolOn, eloRoles, champOn, express, lp, blue, promo]);
   const price = priceBoth.ars;
   const usdAmount = priceBoth.usd;
   const SvcIc = ({ k }) => { const Ic = SERVICES[k].icon; return <Ic size={19} />; };
@@ -1920,9 +1962,15 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
         acct_user: isElo ? acctUser : null, acct_pass: isElo ? acctPass : null,
         summoner: isElo ? acctUser : summoner,
         currency, usd_amount: usdAmt, fx_rate: fxRate,
+        promo_code_id: promo?.id || null,
+        promo_code_text: promo?.code || null,
+        discount_ars: promo ? priceBoth.arsDisc || null : null,
+        discount_usd: promo ? priceBoth.usdDisc || null : null,
       };
       const { data: created, error } = await supabase.from("orders").insert(row).select("id").single();
       if (error) throw error;
+      // incrementar contador del promo (fire and forget, no bloquea si falla)
+      if (promo?.id) { supabase.rpc("increment_promo_usage", { p_code_id: promo.id }).catch(() => {}); }
       try { localStorage.removeItem(DRAFT_KEY); } catch (e) {}
       await notify(`Nuevo pedido de ${profile.full_name} — ${SERVICES[service].label} — entró por validar (con comprobante).`, "admin", null, "new", "order", created?.id);
       await reload(); flash("¡Pedido enviado! Validamos el comprobante y pasa a los boosters."); setTab("home");
@@ -2030,6 +2078,40 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
       </>}
 
       {step === 2 && <>
+        {/* Codigo promocional */}
+        <label style={{ fontSize: 12, fontWeight: 600, color: "var(--mut)", display: "block", marginBottom: 10 }}>Código promocional (opcional)</label>
+        {!promo ? (
+          <div className="nop-card" style={{ padding: 14, background: "var(--bg2)", marginBottom: 18 }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <input className="nop-input" style={{ flex: 1, minWidth: 160, textTransform: "uppercase" }} placeholder="Ej: PROMO10" value={promoInput} onChange={(e) => { setPromoInput(e.target.value.toUpperCase()); setPromoErr(""); }} onKeyDown={(e) => e.key === "Enter" && applyPromo()} />
+              <button className="nop-btn nop-btn-ghost" disabled={promoBusy || !promoInput.trim()} onClick={applyPromo}>{promoBusy ? "Validando…" : "Aplicar"}</button>
+            </div>
+            {promoErr && <div className="nop-mini" style={{ color: "var(--red)", marginTop: 8 }}>{promoErr}</div>}
+          </div>
+        ) : (
+          <div className="nop-card" style={{ padding: 14, background: "rgba(52,211,153,.08)", border: "1px solid rgba(52,211,153,.35)", marginBottom: 18 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                  <Check size={16} style={{ color: "var(--grn)" }} />
+                  <b style={{ color: "var(--grn)", fontSize: 14 }}>{promo.code}</b>
+                </div>
+                <div className="nop-mini">
+                  {promo.discount_type === "percent"
+                    ? `Descuento del ${promo.discount_percent}%`
+                    : `Descuento fijo${(currency === "ars" && promo.discount_ars) ? ` de ${fmtARS(promo.discount_ars)}` : (currency === "usd" && promo.discount_usd) ? ` de ${fmtUSD(promo.discount_usd)}` : ""}`}
+                  {(currency === "ars" && priceBoth.arsDisc > 0) && ` · Ahorrás ${fmtARS(priceBoth.arsDisc)}`}
+                  {(currency === "usd" && priceBoth.usdDisc > 0) && ` · Ahorrás ${fmtUSD(priceBoth.usdDisc)}`}
+                </div>
+                {promo.discount_type === "amount" && ((currency === "ars" && !promo.discount_ars) || (currency === "usd" && !promo.discount_usd)) && (
+                  <div className="nop-mini" style={{ color: "var(--amber)", marginTop: 4 }}>Este código no tiene monto para {currency.toUpperCase()}. Cambiá de moneda o probá otro.</div>
+                )}
+              </div>
+              <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={removePromo}><X size={13} />Quitar</button>
+            </div>
+          </div>
+        )}
+
         <label style={{ fontSize: 12, fontWeight: 600, color: "var(--mut)", display: "block", marginBottom: 10 }}>4 · Elegí la moneda{(server === "LAN" || server === "BR") && <span style={{ color: "var(--mut2)", fontWeight: 400 }}> · {server} solo acepta USD</span>}</label>
         <div className="nop-segwrap" style={{ marginBottom: 18 }}>
           <button type="button" className={"nop-seg" + (currency === "ars" ? " on" : "")} disabled={server === "LAN" || server === "BR"} style={{ opacity: (server === "LAN" || server === "BR") ? .45 : 1, cursor: (server === "LAN" || server === "BR") ? "not-allowed" : "pointer" }} onClick={() => setCurrency("ars")}>Pesos ARS (transferencia)</button>
@@ -2046,12 +2128,49 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "10px 0" }}>
               <div><div className="nop-mini">Nombre / referencia</div><b style={{ fontSize: 15 }}>{PAY_NAME}</b></div>
             </div>
-            <div className="nop-mini" style={{ marginTop: 12 }}>Monto a transferir: <b style={{ color: "var(--gold)" }}>{fmtARS(price)}</b></div>
+            <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--line)" }}>
+              {promo && priceBoth.arsDisc > 0 ? (
+                <>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: "var(--mut)", marginBottom: 4 }}>
+                    <span>Precio original</span>
+                    <span style={{ textDecoration: "line-through" }}>{fmtARS(priceBoth.arsBase)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: "var(--grn)", marginBottom: 8 }}>
+                    <span>Descuento ({promo.code})</span>
+                    <span>− {fmtARS(priceBoth.arsDisc)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", paddingTop: 6, borderTop: "1px dashed var(--line)" }}>
+                    <span style={{ fontSize: 13, fontWeight: 600 }}>Monto a transferir</span>
+                    <b className="nop-display" style={{ color: "var(--gold)", fontSize: 22, fontWeight: 700 }}>{fmtARS(price)}</b>
+                  </div>
+                </>
+              ) : (
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                  <span style={{ fontSize: 13, fontWeight: 600 }}>Monto a transferir</span>
+                  <b className="nop-display" style={{ color: "var(--gold)", fontSize: 22, fontWeight: 700 }}>{fmtARS(price)}</b>
+                </div>
+              )}
+            </div>
           </div>
         ) : (
           <div className="nop-card" style={{ padding: 18, background: "var(--bg2)", marginBottom: 18 }}>
             <div className="nop-panel-h" style={{ marginBottom: 12 }}><Wallet size={15} style={{ color: "var(--violet)" }} />Pagá con PayPal</div>
-            <div className="nop-mini" style={{ marginBottom: 10 }}>Monto a pagar: <b style={{ color: "var(--violet)" }}>{usdAmount ? fmtUSD(usdAmount) : "calculando…"}</b></div>
+            {promo && priceBoth.usdDisc > 0 && usdAmount != null && (
+              <>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: "var(--mut)", marginBottom: 4 }}>
+                  <span>Precio original</span>
+                  <span style={{ textDecoration: "line-through" }}>{fmtUSD(priceBoth.usdBase)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: "var(--grn)", marginBottom: 8 }}>
+                  <span>Descuento ({promo.code})</span>
+                  <span>− {fmtUSD(priceBoth.usdDisc)}</span>
+                </div>
+              </>
+            )}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", paddingTop: (promo && priceBoth.usdDisc > 0) ? 6 : 0, borderTop: (promo && priceBoth.usdDisc > 0) ? "1px dashed var(--line)" : "none", marginBottom: 10 }}>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>Monto a pagar</span>
+              <b className="nop-display" style={{ color: "var(--violet)", fontSize: 22, fontWeight: 700 }}>{usdAmount ? fmtUSD(usdAmount) : "calculando…"}</b>
+            </div>
             <p className="nop-mini" style={{ marginBottom: 14 }}>Abrí el link, hacé el pago y descargá el comprobante para subirlo abajo.</p>
             <a className="nop-btn nop-btn-violet" href={PAYPAL_URL} target="_blank" rel="noreferrer"><ArrowRight size={15} />Ir a PayPal</a>
           </div>
@@ -2111,6 +2230,231 @@ function Cred({ label, value, flash }) {
       <button className="nop-iconbtn" style={{ width: 28, height: 28 }} onClick={() => setShow((s) => !s)}>{show ? <EyeOff size={13} /> : <Eye size={13} />}</button>
       <button className="nop-iconbtn" style={{ width: 28, height: 28 }} onClick={copy}><Copy size={13} /></button>
     </span></div>;
+}
+
+function AdminPromos({ flash }) {
+  const [rows, setRows] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  const load = async () => {
+    setBusy(true);
+    const { data, error } = await supabase.from("promo_codes").select("*").order("created_at", { ascending: false });
+    if (!error) setRows(data || []);
+    setBusy(false);
+  };
+  useEffect(() => { load(); }, []);
+  const toggleActive = async (r) => {
+    const { error } = await supabase.from("promo_codes").update({ active: !r.active }).eq("id", r.id);
+    if (error) { flash("Error: " + error.message); return; }
+    flash(`Código ${r.code} ${!r.active ? "activado" : "desactivado"}`);
+    load();
+  };
+  const remove = async (r) => {
+    if (!window.confirm(`¿Eliminar el código "${r.code}"?\n\nLas órdenes que ya lo usaron mantienen la referencia (el descuento ya está aplicado). Esta acción no se puede deshacer.`)) return;
+    const { error } = await supabase.from("promo_codes").delete().eq("id", r.id);
+    if (error) { flash("Error: " + error.message); return; }
+    flash(`Código "${r.code}" eliminado`);
+    load();
+  };
+
+  const fmtDiscount = (r) => {
+    if (r.discount_type === "percent") return `${r.discount_percent}% off`;
+    const parts = [];
+    if (r.discount_ars) parts.push(fmtARS(r.discount_ars));
+    if (r.discount_usd) parts.push(fmtUSD(r.discount_usd));
+    return parts.join(" · ") || "—";
+  };
+  const fmtMode = (r) => {
+    if (r.usage_limit === 1) return "Uso único";
+    if (r.valid_from || r.expires_at) {
+      const f = r.valid_from ? new Date(r.valid_from).toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit" }) : "hoy";
+      const t = r.expires_at ? new Date(r.expires_at).toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit" }) : "∞";
+      return `${f} → ${t}`;
+    }
+    return "Ilimitado";
+  };
+  const fmtUses = (r) => {
+    if (r.usage_limit) return `${r.used_count || 0} / ${r.usage_limit}`;
+    return `${r.used_count || 0}`;
+  };
+  const isInactive = (r) => {
+    if (!r.active) return true;
+    if (r.expires_at && new Date(r.expires_at) < new Date()) return true;
+    if (r.usage_limit && (r.used_count || 0) >= r.usage_limit) return true;
+    return false;
+  };
+  const inactiveReason = (r) => {
+    if (!r.active) return "Inactivo";
+    if (r.expires_at && new Date(r.expires_at) < new Date()) return "Vencido";
+    if (r.usage_limit && (r.used_count || 0) >= r.usage_limit) return "Agotado";
+    return "";
+  };
+
+  return <>
+    <div className="nop-sectionhead">
+      <div><h1 className="nop-h1">Códigos promocionales</h1>
+        <p className="nop-sub">Descuentos que el cliente aplica en el paso 2 del formulario. Podés tener varios activos a la vez.</p></div>
+      <button className="nop-btn nop-btn-gold" onClick={() => setShowNew(true)}><Plus size={15} />Nuevo código</button>
+    </div>
+
+    {showNew && <PromoForm onClose={() => setShowNew(false)} onSaved={() => { setShowNew(false); load(); }} flash={flash} />}
+
+    <div className="nop-card nop-panel">
+      {busy && rows.length === 0 ? <div className="nop-mini">Cargando…</div> :
+        rows.length === 0 ? <Empty icon={Tag} title="Sin códigos todavía" sub="Creá un código para ofrecer descuentos a tus clientes." /> :
+        <div className="nop-tablewrap"><table className="nop-t">
+          <thead><tr><th>Código</th><th>Descuento</th><th>Duración</th><th>Estado</th><th>Usos</th><th>Notas</th><th></th></tr></thead>
+          <tbody>{rows.map((r) => (
+            <tr key={r.id}>
+              <td><b style={{ fontFamily: "ui-monospace,monospace", fontSize: 13 }}>{r.code}</b></td>
+              <td>{fmtDiscount(r)}</td>
+              <td className="nop-mini">{fmtMode(r)}</td>
+              <td>{isInactive(r)
+                ? <span className="nop-status s-cancelled">{inactiveReason(r)}</span>
+                : <span className="nop-status s-completed">Activo</span>}</td>
+              <td>{fmtUses(r)}</td>
+              <td className="nop-mini" style={{ maxWidth: 200 }}>{r.notes || "—"}</td>
+              <td>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => toggleActive(r)}>
+                    {r.active ? <><EyeOff size={13} />Desactivar</> : <><Eye size={13} />Activar</>}
+                  </button>
+                  <button className="nop-btn nop-btn-danger nop-btn-sm" onClick={() => remove(r)} title="Eliminar"><Trash2 size={13} /></button>
+                </div>
+              </td>
+            </tr>))}</tbody>
+        </table></div>}
+    </div>
+  </>;
+}
+
+function PromoForm({ onClose, onSaved, flash }) {
+  const [code, setCode] = useState("");
+  const [type, setType] = useState("percent");
+  const [pct, setPct] = useState("");
+  const [ars, setArs] = useState("");
+  const [usd, setUsd] = useState("");
+  // Modo de duración: "unlimited" | "single_use" | "date_range"
+  const [mode, setMode] = useState("unlimited");
+  const [validFrom, setValidFrom] = useState("");
+  const [validUntil, setValidUntil] = useState("");
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  // Generar código aleatorio de 8 caracteres, sin caracteres confundibles (0/O, 1/I, etc.)
+  const generateCode = () => {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let out = "";
+    for (let i = 0; i < 8; i++) out += chars[Math.floor(Math.random() * chars.length)];
+    setCode(out);
+  };
+
+  const save = async () => {
+    if (!code.trim()) { flash("Ingresá o generá un código."); return; }
+    if (type === "percent") {
+      const n = Number(pct);
+      if (!(n > 0 && n <= 100)) { flash("El porcentaje debe estar entre 1 y 100."); return; }
+    } else {
+      if (!ars && !usd) { flash("Ingresá al menos un monto (ARS o USD)."); return; }
+    }
+    if (mode === "date_range" && !validFrom && !validUntil) {
+      flash("Ingresá al menos una fecha (desde o hasta).");
+      return;
+    }
+    setBusy(true);
+    const row = {
+      code: code.trim().toUpperCase(),
+      discount_type: type,
+      discount_percent: type === "percent" ? Number(pct) : null,
+      discount_ars: type === "amount" && ars ? Number(ars) : null,
+      discount_usd: type === "amount" && usd ? Number(usd) : null,
+      valid_from: mode === "date_range" && validFrom ? validFrom : null,
+      expires_at: mode === "date_range" && validUntil ? validUntil : null,
+      usage_limit: mode === "single_use" ? 1 : null,
+      notes: notes.trim() || null,
+      active: true,
+    };
+    const { error } = await supabase.from("promo_codes").insert(row);
+    setBusy(false);
+    if (error) { flash(error.message.includes("duplicate") ? "Ese código ya existe. Elegí otro o generá uno automático." : "Error: " + error.message); return; }
+    flash(`Código "${row.code}" creado`);
+    onSaved();
+  };
+
+  return <div className="nop-modal" onClick={onClose}><div className="nop-card nop-modalbox" onClick={(e) => e.stopPropagation()}>
+    <div className="hd"><h3>Nuevo código promocional</h3><button className="nop-iconbtn" onClick={onClose}><X size={16} /></button></div>
+    <div className="bd">
+      <div className="nop-field"><label>Código <span className="req">*</span></label>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <input className="nop-input" style={{ flex: 1, minWidth: 160, textTransform: "uppercase", fontFamily: "ui-monospace,monospace", letterSpacing: ".05em" }} value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="Ej: WELCOME10 o dejá que se genere" />
+          <button type="button" className="nop-btn nop-btn-ghost" onClick={generateCode}><RefreshCw size={13} />Generar</button>
+        </div>
+        <div className="nop-mini" style={{ marginTop: 6 }}>Podés escribirlo vos o generar uno aleatorio de 8 caracteres.</div>
+      </div>
+
+      <div className="nop-field"><label>Tipo de descuento <span className="req">*</span></label>
+        <div className="nop-segwrap" style={{ marginBottom: 0 }}>
+          <button type="button" className={"nop-seg" + (type === "percent" ? " on" : "")} onClick={() => setType("percent")}>Porcentaje (%)</button>
+          <button type="button" className={"nop-seg" + (type === "amount" ? " on" : "")} onClick={() => setType("amount")}>Monto fijo</button>
+        </div>
+      </div>
+
+      {type === "percent" ? (
+        <div className="nop-field"><label>Porcentaje <span className="req">*</span></label>
+          <input className="nop-input" type="number" min="1" max="100" value={pct} onChange={(e) => setPct(e.target.value)} placeholder="Ej: 15" />
+          <div className="nop-mini" style={{ marginTop: 6 }}>Se aplica igual sobre ARS y USD.</div>
+        </div>
+      ) : (
+        <div className="nop-row2">
+          <div className="nop-field"><label>Monto ARS (opcional)</label>
+            <input className="nop-input" type="number" min="0" value={ars} onChange={(e) => setArs(e.target.value)} placeholder="Ej: 5000" /></div>
+          <div className="nop-field"><label>Monto USD (opcional)</label>
+            <input className="nop-input" type="number" min="0" step="0.01" value={usd} onChange={(e) => setUsd(e.target.value)} placeholder="Ej: 5" /></div>
+        </div>
+      )}
+
+      <div className="nop-field"><label>Duración <span className="req">*</span></label>
+        <div style={{ display: "grid", gap: 8 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", border: "1px solid " + (mode === "unlimited" ? "var(--gold)" : "var(--line)"), borderRadius: 10, cursor: "pointer", background: mode === "unlimited" ? "rgba(232,179,73,.08)" : "var(--bg2)" }}>
+            <input type="radio" checked={mode === "unlimited"} onChange={() => setMode("unlimited")} style={{ margin: 0 }} />
+            <div><b style={{ fontSize: 13 }}>Ilimitado</b>
+              <div className="nop-mini">Funciona mientras esté activo. Lo desactivás a mano cuando quieras.</div></div>
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", border: "1px solid " + (mode === "single_use" ? "var(--gold)" : "var(--line)"), borderRadius: 10, cursor: "pointer", background: mode === "single_use" ? "rgba(232,179,73,.08)" : "var(--bg2)" }}>
+            <input type="radio" checked={mode === "single_use"} onChange={() => setMode("single_use")} style={{ margin: 0 }} />
+            <div><b style={{ fontSize: 13 }}>Uso único</b>
+              <div className="nop-mini">Se puede usar UNA SOLA VEZ en total. Después se desactiva solo.</div></div>
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", border: "1px solid " + (mode === "date_range" ? "var(--gold)" : "var(--line)"), borderRadius: 10, cursor: "pointer", background: mode === "date_range" ? "rgba(232,179,73,.08)" : "var(--bg2)" }}>
+            <input type="radio" checked={mode === "date_range"} onChange={() => setMode("date_range")} style={{ margin: 0 }} />
+            <div style={{ flex: 1 }}><b style={{ fontSize: 13 }}>Habilitado por fechas</b>
+              <div className="nop-mini">Funciona solo entre las fechas que elijas.</div></div>
+          </label>
+        </div>
+      </div>
+
+      {mode === "date_range" && (
+        <div className="nop-row2">
+          <div className="nop-field"><label>Desde (opcional)</label>
+            <input className="nop-input" type="date" value={validFrom} onChange={(e) => setValidFrom(e.target.value)} />
+            <div className="nop-mini" style={{ marginTop: 6 }}>Vacío = arranca hoy.</div>
+          </div>
+          <div className="nop-field"><label>Hasta (opcional)</label>
+            <input className="nop-input" type="date" value={validUntil} onChange={(e) => setValidUntil(e.target.value)} />
+            <div className="nop-mini" style={{ marginTop: 6 }}>Vacío = no expira.</div>
+          </div>
+        </div>
+      )}
+
+      <div className="nop-field"><label>Notas (solo para vos)</label>
+        <input className="nop-input" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Ej: Campaña Instagram junio" /></div>
+
+      <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+        <button className="nop-btn nop-btn-ghost" style={{ flex: 1 }} onClick={onClose}>Cancelar</button>
+        <button className="nop-btn nop-btn-gold" style={{ flex: 1 }} disabled={busy} onClick={save}>{busy ? "Creando…" : "Crear código"}<Check size={15} /></button>
+      </div>
+    </div>
+  </div></div>;
 }
 
 function AdminAccounts({ accounts, reload, flash }) {
