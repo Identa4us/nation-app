@@ -31,16 +31,40 @@ const ACC_STATUS_LABEL = { activa: "Disponible", inactiva: "En uso", deshabilita
 const PREF_DAYS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
 const PREF_TIMES = ["Mañana", "Tarde", "Noche"];
 
-const TIER_DIV_COST = { Hierro: 3000, Bronce: 4500, Plata: 6000, Oro: 9000, Platino: 12600, Esmeralda: 17100, Diamante: 22500 };
+// Precios por división (Hierro → Esmeralda: mismo precio para las 4 divisiones)
+const PRICE_DIV_ARS = { Hierro: 2400, Bronce: 3600, Plata: 4800, Oro: 6000, Platino: 7200, Esmeralda: 9600 };
+const PRICE_DIV_USD = { Hierro: 2.4, Bronce: 3, Plata: 4.2, Oro: 4.8, Platino: 6.6, Esmeralda: 9 };
+// Diamante: precio escalonado según la división actual
+const PRICE_DIAMANTE_ARS = { IV: 12000, III: 14400, II: 18000, I: 18000 };
+const PRICE_DIAMANTE_USD = { IV: 12, III: 14.4, II: 18, I: 18 };
 const LANES = ["Top", "Jungla", "Mid", "ADC", "Support"];
 const COACHING_PRICE = { 1: 15000, 3: 35000, 5: 50000 };
 function rankPos(r, d) { const i = RANKS.indexOf(r); return r === "Master" ? 32 : i * 4 + DIVS.indexOf(d); }
-function estimateDuo(cur, curD, tgt, tgtD, combo) {
-  let p = rankPos(cur, curD), to = rankPos(tgt, tgtD), steps = Math.max(0, to - p), price = 0;
-  for (let i = 0; i < steps; i++) { price += TIER_DIV_COST[RANKS[Math.min(7, Math.floor(p / 4))]] || 6000; p++; }
-  if (steps === 0) price = TIER_DIV_COST[cur] || 6000;
-  if (combo) price = Math.round(price * 1.5);
-  return Math.round(price / 100) * 100;
+
+// Precio de subir UNA sola división desde (rank, div). Retorna { ars, usd }.
+function priceOneDivision(rank, div) {
+  if (rank === "Diamante") return { ars: PRICE_DIAMANTE_ARS[div] || 0, usd: PRICE_DIAMANTE_USD[div] || 0 };
+  return { ars: PRICE_DIV_ARS[rank] || 0, usd: PRICE_DIV_USD[rank] || 0 };
+}
+
+// Precio base para ir de (cur, curD) hasta (tgt, tgtD). Suma cada división del trayecto.
+function estimateBase(cur, curD, tgt, tgtD) {
+  let p = rankPos(cur, curD), to = rankPos(tgt, tgtD), steps = Math.max(0, to - p);
+  let ars = 0, usd = 0;
+  for (let i = 0; i < steps; i++) {
+    const rankIdx = Math.min(7, Math.floor(p / 4));
+    const currRank = RANKS[rankIdx];
+    const currDiv = DIVS[p % 4];
+    const { ars: a, usd: u } = priceOneDivision(currRank, currDiv);
+    ars += a; usd += u;
+    p++;
+  }
+  // sin steps (mismo rank+div): cobrar mínimo el equivalente a 1 división de la liga actual
+  if (steps === 0) {
+    const { ars: a, usd: u } = priceOneDivision(cur, curD);
+    ars = a; usd = u;
+  }
+  return { ars, usd };
 }
 const fmtARS = (n) => "$" + Math.round(n || 0).toLocaleString("es-AR");
 const fmtUSD = (n) => "US$" + (Math.round((n || 0) * 100) / 100).toLocaleString("es-AR");
@@ -1801,6 +1825,11 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
   const [summoner, setSummoner] = useState("");
   const [accepted, setAccepted] = useState(false);
   const [currency, setCurrency] = useState("ars"); // ars | usd
+
+  // LAN y BR solo cobran USD; si el usuario cambia a esos servers, forzar USD
+  useEffect(() => {
+    if ((server === "LAN" || server === "BR") && currency === "ars") setCurrency("usd");
+  }, [server]);
   const [blue, setBlue] = useState(null);
   useEffect(() => { if (currency === "usd" && !blue) fetchBlue().then(setBlue); }, [currency]);
   const [file, setFile] = useState(null);
@@ -1816,19 +1845,34 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
   const eloTgtDivs = DIVS.filter((d) => { const s = rankPos(tgt, d) - curPos; return s > 0 && s <= 8; });
   const lpSurcharge = lp === "+15" ? 1.1 : 1; // +15 LP = +10%
 
-  const price = useMemo(() => {
-    if (isCoaching) return COACHING_PRICE[games];
-    if (isElo) {
-      let b = estimateDuo(cur, curD, tgt, tgtD, false);
-      b *= lpSurcharge;
-      if (rolOn && eloRoles.length) b *= 1.3;   // rol específico +30%
-      if (champOn) b *= 1.5;                      // campeón +50%
-      if (express) b *= 1.2;                      // express +20%
-      return Math.round(b / 100) * 100;
+  const priceBoth = useMemo(() => {
+    if (isCoaching) {
+      // coaching: precio fijo en ARS; USD se sigue convirtiendo con el blue (spec del user)
+      const ars = COACHING_PRICE[games];
+      const usd = blue ? Math.round((ars / blue) * 100) / 100 : null;
+      return { ars, usd };
     }
-    return estimateDuo(cur, curD, tgt, tgtD, service === "combo");
-  }, [service, cur, curD, tgt, tgtD, games, isCoaching, isElo, rolOn, eloRoles, champOn, express, lp]);
-  const usdAmount = blue ? Math.round((price / blue) * 100) / 100 : null;
+    // precio base (suma por división)
+    let { ars, usd } = estimateBase(cur, curD, tgt, tgtD);
+    // multiplicadores ADITIVOS sobre el base (no compuestos)
+    let mult = 0;
+    if (service === "duoboost") mult += 0.50;                        // DuoBoost = +50%
+    if (service === "combo") mult += 1.00;                           // Combo (Duo + Coaching Live) = +100%
+    if (isElo) {
+      if (lp === "+15") mult += 0.10;                                // LP +15 = +10%
+      if (rolOn && eloRoles.length) mult += 0.30;                    // Rol específico = +30%
+      if (champOn) mult += 0.50;                                     // Campeón específico = +50%
+      if (express) mult += 0.20;                                     // Express = +20%
+    }
+    ars = ars * (1 + mult);
+    usd = usd * (1 + mult);
+    return {
+      ars: Math.round(ars / 100) * 100,                              // redondeo a centena
+      usd: Math.round(usd * 100) / 100,                              // 2 decimales
+    };
+  }, [service, cur, curD, tgt, tgtD, games, isCoaching, isElo, rolOn, eloRoles, champOn, express, lp, blue]);
+  const price = priceBoth.ars;
+  const usdAmount = priceBoth.usd;
   const SvcIc = ({ k }) => { const Ic = SERVICES[k].icon; return <Ic size={19} />; };
   const copy = (t) => { try { navigator.clipboard.writeText(t); flash("Copiado: " + t); } catch (e) { flash("Copiá manualmente: " + t); } };
 
@@ -1858,8 +1902,12 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
       const up = await supabase.storage.from("comprobantes").upload(path, file, { upsert: false });
       if (up.error) throw up.error;
       const eloDetail = isElo ? `${rolOn && eloRoles.length ? "Rol: " + eloRoles.join("/") : "Sin rol fijo"}${champOn && champName ? ` · Campeón: ${champName}` : ""}${express ? " · ⚡ Express" : ""} · LP ${lp}` : "";
+      // USD nativo desde la tabla del sistema; fx_rate = blue solo como referencia (informativa)
       let fxRate = null, usdAmt = null;
-      if (currency === "usd") { fxRate = blue || (await fetchBlue()); usdAmt = fxRate ? Math.round((price / fxRate) * 100) / 100 : null; }
+      if (currency === "usd") {
+        usdAmt = usdAmount;
+        fxRate = blue || (await fetchBlue()); // guardamos el blue del momento como referencia, no lo usamos para calcular
+      }
       const row = {
         client_id: profile.id, client_name: profile.full_name, client_discord: profile.discord || profile.email,
         service, cur_rank: cur, cur_div: curD,
@@ -1957,17 +2005,34 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
         <div className="nop-field"><label>Notas para el booster</label><textarea className="nop-ta" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Horarios, preferencias, lo que quieras aclarar…" /></div>
 
         <div className="nop-card" style={{ padding: 16, background: "var(--bg2)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 14 }}>
-          <div><div className="nop-mini">Precio estimado {service === "combo" && "(incluye coaching en vivo +50%)"}{isElo && lpSurcharge > 1 && " · +10% LP"}{isElo && rolOn && eloRoles.length > 0 && " · +30% rol"}{isElo && champOn && " · +50% campeón"}{isElo && express && " · +20% express"}</div>
-            <div className="nop-display" style={{ fontSize: 26, fontWeight: 700, color: "var(--gold)" }}>{fmtARS(price)}</div>
-            <div className="nop-mini">Lo confirma el equipo según tu MMR.</div></div>
+          <div>
+            <div className="nop-display" style={{ fontSize: 26, fontWeight: 700, color: "var(--gold)", lineHeight: 1.1 }}>
+              {server === "LAS" ? (
+                <>{fmtARS(price)} <span style={{ fontSize: 18, color: "var(--violet)" }}>· {usdAmount ? fmtUSD(usdAmount) : "—"}</span></>
+              ) : (
+                <span style={{ color: "var(--violet)" }}>{usdAmount ? fmtUSD(usdAmount) : "—"}</span>
+              )}
+            </div>
+            {(service === "combo" || (isElo && ((lpSurcharge > 1) || (rolOn && eloRoles.length > 0) || champOn || express))) && (
+              <div className="nop-mini" style={{ marginTop: 6 }}>
+                {[
+                  service === "combo" && "coaching en vivo +50%",
+                  isElo && lpSurcharge > 1 && "+10% LP",
+                  isElo && rolOn && eloRoles.length > 0 && "+30% rol",
+                  isElo && champOn && "+50% campeón",
+                  isElo && express && "+20% express",
+                ].filter(Boolean).join(" · ")}
+              </div>
+            )}
+          </div>
           <button className="nop-btn nop-btn-gold" disabled={eloInvalid} onClick={() => setStep(2)}>Siguiente: pago <ArrowRight size={15} /></button>
         </div>
       </>}
 
       {step === 2 && <>
-        <label style={{ fontSize: 12, fontWeight: 600, color: "var(--mut)", display: "block", marginBottom: 10 }}>4 · Elegí la moneda</label>
+        <label style={{ fontSize: 12, fontWeight: 600, color: "var(--mut)", display: "block", marginBottom: 10 }}>4 · Elegí la moneda{(server === "LAN" || server === "BR") && <span style={{ color: "var(--mut2)", fontWeight: 400 }}> · {server} solo acepta USD</span>}</label>
         <div className="nop-segwrap" style={{ marginBottom: 18 }}>
-          <button type="button" className={"nop-seg" + (currency === "ars" ? " on" : "")} onClick={() => setCurrency("ars")}>Pesos (transferencia)</button>
+          <button type="button" className={"nop-seg" + (currency === "ars" ? " on" : "")} disabled={server === "LAN" || server === "BR"} style={{ opacity: (server === "LAN" || server === "BR") ? .45 : 1, cursor: (server === "LAN" || server === "BR") ? "not-allowed" : "pointer" }} onClick={() => setCurrency("ars")}>Pesos ARS (transferencia)</button>
           <button type="button" className={"nop-seg" + (currency === "usd" ? " on" : "")} onClick={() => setCurrency("usd")}>USD (PayPal)</button>
         </div>
 
