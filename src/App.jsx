@@ -121,6 +121,15 @@ export default function App() {
 
   /* sesión */
   useEffect(() => {
+    // si el usuario llega desde el mail de recuperación (ruta /reset-password
+    // o hash type=recovery), forzamos la pantalla de nueva contraseña aunque
+    // el evento PASSWORD_RECOVERY se dispare después del primer render.
+    try {
+      const onResetRoute = window.location.pathname.replace(/\/+$/, "").endsWith("/reset-password");
+      const hasRecoveryHash = window.location.hash.includes("type=recovery");
+      if (onResetRoute || hasRecoveryHash) setRecovery(true);
+    } catch (e) {}
+
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
     const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
       if (event === "PASSWORD_RECOVERY") setRecovery(true);
@@ -380,7 +389,10 @@ function Auth() {
         if (pass !== pass2) throw new Error("Las contraseñas no coinciden.");
         const { data, error } = await supabase.auth.signUp({
           email, password: pass,
-          options: { data: { full_name: fullName, role, discord, phone, cbu } },
+          options: {
+            data: { full_name: fullName, role, discord, phone, cbu },
+            emailRedirectTo: window.location.origin + "/",
+          },
         });
         if (error) throw error;
         if (role === "booster") {
@@ -391,7 +403,7 @@ function Auth() {
         else if (role === "booster") setOk("Cuenta creada. Un administrador tiene que aprobarte antes de tomar trabajos.");
       } else if (mode === "recover") {
         if (!email) throw new Error("Ingresá tu email.");
-        const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin });
+        const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin + "/reset-password" });
         if (error) throw error;
         setOk("Si ese email tiene cuenta, te enviamos un enlace para restablecer la contraseña. Revisá tu casilla (y spam).");
       }
@@ -465,35 +477,43 @@ function SetNewPassword({ onDone }) {
   const [pass, setPass] = useState("");
   const [pass2, setPass2] = useState("");
   const [err, setErr] = useState("");
+  const [ok, setOk] = useState("");
   const [busy, setBusy] = useState(false);
   const save = async () => {
-    setErr("");
+    setErr(""); setOk("");
     if (pass.length < 6) { setErr("Mínimo 6 caracteres."); return; }
     if (pass !== pass2) { setErr("Las contraseñas no coinciden."); return; }
     setBusy(true);
     const { error } = await supabase.auth.updateUser({ password: pass });
     setBusy(false);
     if (error) { setErr(error.message); return; }
-    onDone();
+    setOk("Contraseña actualizada. Entrando…");
+    // limpiar hash/token de la URL y volver al home; la sesión de recovery
+    // queda como sesión normal, así que la app entra directo al inicio.
+    try { window.history.replaceState(null, "", "/"); } catch (e) {}
+    setTimeout(() => onDone(), 600);
   };
   return (
     <div className="nop-auth"><div className="nop-authbox">
       <div className="nop-authhead">
-        <div className="badge">Eloboost Nation</div>
+        <img src="/logo.png" alt="Eloboost Nation" className="nop-authlogo" />
         <h1 className="nop-display">Nueva contraseña</h1>
-        <p>Elegí una contraseña nueva para tu cuenta.</p>
+        <p>Elegí una contraseña nueva para tu cuenta y volvemos a entrar.</p>
       </div>
       <div className="nop-card" style={{ padding: 24 }}>
         {err && <div className="nop-err">{err}</div>}
+        {ok && <div className="nop-ok">{ok}</div>}
         <div className="nop-field"><label>Nueva contraseña <span className="req">*</span></label>
-          <input className="nop-input" type="password" value={pass} onChange={(e) => setPass(e.target.value)} placeholder="••••••••" /></div>
+          <input className="nop-input" type="password" value={pass} onChange={(e) => setPass(e.target.value)} placeholder="••••••••" autoFocus /></div>
         <div className="nop-field"><label>Repetir contraseña <span className="req">*</span></label>
           <input className="nop-input" type="password" value={pass2} onChange={(e) => setPass2(e.target.value)} placeholder="••••••••"
-            onKeyDown={(e) => e.key === "Enter" && save()} /></div>
-        <button className="nop-btn nop-btn-gold" style={{ width: "100%" }} disabled={busy} onClick={save}>
-          {busy ? "Guardando…" : "Guardar contraseña"}<Check size={15} />
+            onKeyDown={(e) => e.key === "Enter" && save()} />
+          {pass2 && pass !== pass2 && <p className="nop-mini" style={{ color: "var(--red)", marginTop: 6 }}>Las contraseñas no coinciden.</p>}</div>
+        <button className="nop-btn nop-btn-gold" style={{ width: "100%" }} disabled={busy || !pass || pass !== pass2} onClick={save}>
+          {busy ? "Guardando…" : "Guardar y entrar"}<Check size={15} />
         </button>
       </div>
+      <p style={{ textAlign: "center", color: "var(--mut2)", fontSize: 12, marginTop: 18 }}>Eloboost Nation · Operaciones internas</p>
     </div></div>
   );
 }
