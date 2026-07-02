@@ -214,6 +214,48 @@ export default function App() {
     await reload(); flash(`Pedido #${o.id} eliminado`);
   };
 
+  const deleteUser = async (u) => {
+    const label = u.full_name || u.email || "el usuario";
+    const roleLbl = u.role === "booster" ? "booster" : "cliente";
+
+    // seguridad: si es booster, verificar que no tenga trabajos en curso
+    if (u.role === "booster") {
+      const active = orders.filter((o) => o.booster_id === u.id && (o.status === "in_progress" || o.status === "available"));
+      if (active.length > 0) {
+        flash(`No se puede eliminar: ${label} tiene ${active.length} trabajo(s) activo(s). Reasignalos o finalizalos primero.`);
+        return;
+      }
+    }
+
+    if (!window.confirm(
+      `¿Eliminar al ${roleLbl} "${label}"?\n\n` +
+      `• Se borra el perfil de la app y pierde acceso.\n` +
+      (u.role === "booster" ? "• Las cuentas de juego que tenía tomadas quedan libres.\n" : "") +
+      "• El registro en Supabase Auth (email) queda ocupado; borralo aparte desde el dashboard si querés reciclarlo.\n\n" +
+      "Esta acción no se puede deshacer."
+    )) return;
+
+    // 1) si es booster, liberar cuentas en uso para no dejarlas huérfanas
+    if (u.role === "booster") {
+      await supabase.from("game_accounts")
+        .update({ status: "activa", taken_by: null, taken_by_name: null })
+        .eq("taken_by", u.id);
+    }
+
+    // 2) borrar el perfil (bloqueará si hay FK sin ON DELETE configurado; mostramos el error)
+    const { data, error } = await supabase.from("profiles").delete().eq("id", u.id).select();
+    if (error) {
+      flash("No se pudo eliminar: " + error.message);
+      return;
+    }
+    if (!data || data.length === 0) {
+      flash("No se pudo eliminar: falta el permiso (policy) o el usuario tiene registros relacionados que impiden el borrado.");
+      return;
+    }
+    await reload();
+    flash(`${label} eliminado`);
+  };
+
   const logout = async () => { await supabase.auth.signOut(); setProfile(null); setOrders([]); setNotifs([]); setProfiles([]); setTab(""); };
 
   if (booting) return <Splash />;
@@ -252,7 +294,7 @@ export default function App() {
     }
   };
 
-  const ctx = { profile, orders, profiles, accounts, reload, flash, notify, deleteOrder };
+  const ctx = { profile, orders, profiles, accounts, reload, flash, notify, deleteOrder, deleteUser };
   const avatarColor = profile.role === "admin" ? "var(--gold)" : profile.role === "booster" ? "var(--cyan)" : "var(--violet)";
 
   return (
@@ -694,7 +736,7 @@ function BoosterApprove({ p, onAccept, onReject }) {
     </div>
   </div>;
 }
-function AdminClients({ profiles, orders }) {
+function AdminClients({ profiles, orders, deleteUser }) {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(null);
   let clients = profiles.filter((p) => p.role === "cliente");
@@ -709,6 +751,11 @@ function AdminClients({ profiles, orders }) {
       gasto: mine.filter((o) => o.status === "completed").reduce((a, o) => a + Number(o.price), 0),
     };
   };
+  const onDelete = async (c, e) => {
+    e.stopPropagation();
+    await deleteUser(c);
+    setOpen(null);
+  };
   return <>
     <div className="nop-sectionhead"><div><h1 className="nop-h1">Clientes</h1>
       <p className="nop-sub">Usuarios registrados y su actividad. Tocá una fila para ver el detalle.</p></div></div>
@@ -721,7 +768,7 @@ function AdminClients({ profiles, orders }) {
     <div className="nop-card nop-panel">
       {clients.length === 0 ? <Empty icon={Users} title="Sin clientes todavía" sub="Cuando alguien se registre como cliente, aparece acá." /> :
         <div className="nop-tablewrap"><table className="nop-t">
-          <thead><tr><th>Cliente</th><th>Email</th><th>Teléfono</th><th>Discord</th><th>Activos</th><th>En espera</th><th>Completados</th><th>Gastado</th></tr></thead>
+          <thead><tr><th>Cliente</th><th>Email</th><th>Teléfono</th><th>Discord</th><th>Activos</th><th>En espera</th><th>Completados</th><th>Gastado</th><th></th></tr></thead>
           <tbody>{clients.map((c) => { const s = statsOf(c.id); return (
             <tr key={c.id} style={{ cursor: "pointer" }} onClick={() => setOpen({ c, s, orders: orders.filter((o) => o.client_id === c.id) })}>
               <td><div style={{ display: "flex", alignItems: "center", gap: 9 }}><span className="nop-avatar" style={{ background: "var(--violet)" }}>{(c.full_name || "?")[0]?.toUpperCase()}</span><b>{c.full_name || "—"}</b></div></td>
@@ -732,13 +779,16 @@ function AdminClients({ profiles, orders }) {
               <td><span style={{ color: "var(--amber)", fontWeight: 600 }}>{s.espera}</span></td>
               <td><span style={{ color: "var(--grn)", fontWeight: 600 }}>{s.completados}</span></td>
               <td style={{ color: "var(--gold)" }}>{fmtARS(s.gasto)}</td>
+              <td>
+                <button className="nop-btn nop-btn-danger nop-btn-sm" onClick={(e) => onDelete(c, e)} title="Eliminar cliente"><Trash2 size={13} /></button>
+              </td>
             </tr>); })}</tbody>
         </table></div>}
     </div>
-    {open && <ClientDetailModal data={open} onClose={() => setOpen(null)} />}
+    {open && <ClientDetailModal data={open} onClose={() => setOpen(null)} onDelete={deleteUser ? async () => { await deleteUser(open.c); setOpen(null); } : null} />}
   </>;
 }
-function ClientDetailModal({ data, onClose }) {
+function ClientDetailModal({ data, onClose, onDelete }) {
   const { c, s, orders } = data;
   return <div className="nop-modal" onClick={onClose}><div className="nop-card nop-modalbox" onClick={(e) => e.stopPropagation()}>
     <div className="hd"><h3>{c.full_name || "Cliente"}</h3><button className="nop-iconbtn" onClick={onClose}><X size={16} /></button></div>
@@ -758,6 +808,7 @@ function ClientDetailModal({ data, onClose }) {
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}><b style={{ color: "var(--mut)", fontSize: 12 }}>#{o.id}</b><SvcTag s={o.service} /><StatusBadge s={o.status} /></div>
             <b style={{ fontSize: 13 }}>{fmtARS(o.price)}</b>
           </div>))}</div>}
+      {onDelete && <button className="nop-btn nop-btn-danger" style={{ width: "100%", marginTop: 16 }} onClick={onDelete}><Trash2 size={15} />Eliminar cliente</button>}
     </div>
   </div></div>;
 }
@@ -789,6 +840,19 @@ function AdminDash({ orders, profiles }) {
   const boosters = profiles.filter((p) => p.role === "booster" && p.status === "active");
   const load = boosters.map((b) => ({ ...b, n: liveActive.filter((o) => o.booster_id === b.id).length }));
 
+  // capacidad: ratio servicios activos por booster activo
+  // < 3 → celeste (podemos tomar más servicios)
+  // 3–5 → verde (óptimo)
+  // > 5 → rojo (saturado)
+  const ratio = boosters.length > 0 ? liveActive.length / boosters.length : 0;
+  const capacity = boosters.length === 0
+    ? { color: "var(--mut2)", label: "Sin boosters activos" }
+    : ratio < 3
+      ? { color: "var(--cyan)", label: `Podemos tomar más · ${ratio.toFixed(1)}/booster` }
+      : ratio <= 5
+        ? { color: "var(--grn)", label: `Carga óptima · ${ratio.toFixed(1)}/booster` }
+        : { color: "var(--red)", label: `Saturado · ${ratio.toFixed(1)}/booster` };
+
   const kpi = (lbl, val, Icon, color, sub) => (
     <div className="nop-card nop-kpi"><div className="gl" style={{ background: color }} />
       <div className="lbl"><Icon size={13} style={{ color }} />{lbl}</div>
@@ -808,7 +872,7 @@ function AdminDash({ orders, profiles }) {
       {kpi("Facturación", fmtARS(facturacion), Wallet, "var(--gold)", periodo)}
       {kpi("Ganancia neta", fmtARS(ganancia), TrendingUp, "var(--grn)", "después de pagar boosters")}
       {kpi("Servicios cerrados", completed.length, Trophy, "var(--cyan)", periodo)}
-      {kpi("Satisfacción", avg ? avg.toFixed(1) + " ★" : "—", Star, "var(--violet)", `${ratings.length} reseñas`)}
+      {kpi("Servicios activos", liveActive.length, Zap, capacity.color, boosters.length > 0 ? capacity.label : "Cargá boosters para ver capacidad")}
     </div>
     <div className="nop-twocol" style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 14 }}>
       <div className="nop-card nop-panel">
@@ -1097,7 +1161,7 @@ function BulkImportModal({ profiles, reload, flash, onClose }) {
     </div></div></div>;
 }
 
-function AdminBoosters({ orders, profiles, reload, flash }) {
+function AdminBoosters({ orders, profiles, reload, flash, deleteUser }) {
   const boosters = profiles.filter((p) => p.role === "booster");
   const completed = orders.filter((o) => o.status === "completed");
   const active = orders.filter((o) => o.status === "in_progress");
@@ -1121,9 +1185,14 @@ function AdminBoosters({ orders, profiles, reload, flash }) {
           <td>{done.length}</td>
           <td style={{ color: "var(--gold)", fontWeight: 600 }}>{fmtARS(paid)}</td>
           <td>{avg !== "—" ? avg + " ★" : "—"}</td>
-          <td>{b.status === "active"
-            ? <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setStatus(b, "disabled")}>Deshabilitar</button>
-            : <button className="nop-btn nop-btn-cyan nop-btn-sm" onClick={() => setStatus(b, "active")}>Habilitar</button>}</td>
+          <td>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {b.status === "active"
+                ? <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setStatus(b, "disabled")}>Deshabilitar</button>
+                : <button className="nop-btn nop-btn-cyan nop-btn-sm" onClick={() => setStatus(b, "active")}>Habilitar</button>}
+              {deleteUser && <button className="nop-btn nop-btn-danger nop-btn-sm" onClick={() => deleteUser(b)} title="Eliminar booster"><Trash2 size={13} /></button>}
+            </div>
+          </td>
         </tr>; })}</tbody>
     </table></div></div>
   </>;
