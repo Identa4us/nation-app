@@ -25,7 +25,7 @@ const STATUS_LABEL = { pending: "En revisión", available: "Disponible", in_prog
 
 const SUPPORT_WA = "https://api.whatsapp.com/send?phone=542214287466&text=Hola!%20Necesito%20ayuda%20con%20Eloboost%20Nation";
 const PAY_ALIAS = "boost.nation.arq";
-const PAY_NAME = "$felipemoneti";
+const PAY_NAME = "Felipe Monetti";
 const PAYPAL_URL = "https://www.paypal.com/paypalme/eloboostlolgg";
 const ACC_STATUS_LABEL = { activa: "Disponible", inactiva: "En uso", deshabilitada: "Deshabilitada" };
 const PREF_DAYS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
@@ -171,24 +171,6 @@ export default function App() {
   reloadRef.current = reload;
 
   useEffect(() => { reload(); }, [reload]);
-
-  /* inactividad: tras 10 min sin interacción, volver a la pestaña principal y borrar el borrador del formulario */
-  useEffect(() => {
-    if (!profile) return;
-    let timer;
-    const home = profile.role === "admin" ? "validate" : profile.role === "booster" ? "board" : "home";
-    const reset = () => {
-      clearTimeout(timer);
-      timer = setTimeout(() => {
-        try { localStorage.removeItem("nop_draft_" + profile.id); } catch (e) {}
-        setTab(home);
-      }, 10 * 60 * 1000);
-    };
-    const evs = ["mousemove", "mousedown", "keydown", "touchstart", "scroll"];
-    evs.forEach((e) => window.addEventListener(e, reset, { passive: true }));
-    reset();
-    return () => { clearTimeout(timer); evs.forEach((e) => window.removeEventListener(e, reset)); };
-  }, [profile]);
 
   /* tiempo real */
   useEffect(() => {
@@ -441,7 +423,11 @@ function Auth() {
           // aviso al admin (best-effort: requiere sesión activa, i.e. confirmación de email desactivada)
           try { await supabase.from("notifications").insert({ text: `Nuevo booster registrado: ${fullName}. Aprobalo o rechazalo en Validaciones.`, recipient_role: "admin", icon: "user", link_type: "validate" }); } catch (e) {}
         }
-        if (!data.session) { setOk("Cuenta creada. Ya podés iniciar sesión."); setMode("login"); }
+        if (!data.session) {
+          if (role === "booster") setOk("Cuenta creada. 1) Confirmá tu email desde el enlace que te enviamos. 2) Un admin tiene que aprobarte antes de tomar trabajos.");
+          else setOk("Cuenta creada. Confirmá tu email desde el enlace que te enviamos y luego iniciá sesión.");
+          setMode("login");
+        }
         else if (role === "booster") setOk("Cuenta creada. Un administrador tiene que aprobarte antes de tomar trabajos.");
       } else if (mode === "recover") {
         if (!email) throw new Error("Ingresá tu email.");
@@ -1880,7 +1866,8 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
       await notify(`Nuevo pedido de ${profile.full_name} — ${SERVICES[service].label} — entró por validar (con comprobante).`, "admin", null, "new", "order", created?.id);
       await reload(); flash("¡Pedido enviado! Validamos el comprobante y pasa a los boosters."); setTab("home");
     } catch (e) {
-      flash("No se pudo enviar el pedido. Reintentá.");
+      console.error("Error al enviar pedido:", e);
+      flash("No se pudo enviar el pedido: " + (e.message || e.error_description || "error desconocido"));
     } finally { setBusy(false); }
   };
 
@@ -1980,14 +1967,13 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "10px 0" }}>
               <div><div className="nop-mini">Nombre / referencia</div><b style={{ fontSize: 15 }}>{PAY_NAME}</b></div>
-              <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => copy(PAY_NAME)}><Copy size={13} />Copiar</button>
             </div>
             <div className="nop-mini" style={{ marginTop: 12 }}>Monto a transferir: <b style={{ color: "var(--gold)" }}>{fmtARS(price)}</b></div>
           </div>
         ) : (
           <div className="nop-card" style={{ padding: 18, background: "var(--bg2)", marginBottom: 18 }}>
             <div className="nop-panel-h" style={{ marginBottom: 12 }}><Wallet size={15} style={{ color: "var(--violet)" }} />Pagá con PayPal</div>
-            <div className="nop-mini" style={{ marginBottom: 10 }}>Monto a pagar: <b style={{ color: "var(--violet)" }}>{usdAmount ? fmtUSD(usdAmount) : "calculando…"}</b>{usdAmount && <span> (≈ {fmtARS(price)} al blue)</span>}</div>
+            <div className="nop-mini" style={{ marginBottom: 10 }}>Monto a pagar: <b style={{ color: "var(--violet)" }}>{usdAmount ? fmtUSD(usdAmount) : "calculando…"}</b></div>
             <p className="nop-mini" style={{ marginBottom: 14 }}>Abrí el link, hacé el pago y descargá el comprobante para subirlo abajo.</p>
             <a className="nop-btn nop-btn-violet" href={PAYPAL_URL} target="_blank" rel="noreferrer"><ArrowRight size={15} />Ir a PayPal</a>
           </div>
