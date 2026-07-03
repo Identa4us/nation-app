@@ -346,7 +346,7 @@ export default function App() {
     <>
       <div className="nop-topbar"><div className="nop-shell">
         <div className="nop-topbar-in">
-          <div className="nop-logo"><img src="/logo.png" alt="Eloboost Nation" style={{ height: 30, width: "auto", display: "block" }} /></div>
+          <div className="nop-logo"><img src="/logo.png" alt="Eloboost Nation" style={{ height: 44, width: "auto", display: "block", maxWidth: "60vw" }} /></div>
           <div className="nop-spacer" />
           <span className="nop-roletag">{profile.role === "admin" ? "Admin" : profile.role === "booster" ? "Booster" : "Cliente"}</span>
           <a className="nop-iconbtn" href={SUPPORT_WA} target="_blank" rel="noreferrer" title="Soporte por WhatsApp" style={{ color: "#25D366" }}><Headset size={17} /></a>
