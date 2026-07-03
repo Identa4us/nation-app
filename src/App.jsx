@@ -247,7 +247,7 @@ export default function App() {
       `¿Eliminar al ${roleLbl} "${label}"?\n\n` +
       `• Se borra el perfil de la app y pierde acceso.\n` +
       (u.role === "booster" ? "• Las cuentas de juego que tenía tomadas quedan libres.\n" : "") +
-      "• El registro en Supabase Auth (email) queda ocupado; borralo aparte desde el dashboard si querés reciclarlo.\n\n" +
+      "• El email queda liberado en Supabase Auth para volver a registrarse.\n\n" +
       "Esta acción no se puede deshacer."
     )) return;
 
@@ -258,16 +258,24 @@ export default function App() {
         .eq("taken_by", u.id);
     }
 
-    // 2) borrar el perfil (bloqueará si hay FK sin ON DELETE configurado; mostramos el error)
+    // 2) borrar el perfil
     const { data, error } = await supabase.from("profiles").delete().eq("id", u.id).select();
-    if (error) {
-      flash("No se pudo eliminar: " + error.message);
-      return;
-    }
+    if (error) { flash("No se pudo eliminar: " + error.message); return; }
     if (!data || data.length === 0) {
       flash("No se pudo eliminar: falta el permiso (policy) o el usuario tiene registros relacionados que impiden el borrado.");
       return;
     }
+
+    // 3) borrar tambien del auth.users via edge function (para liberar el email)
+    try {
+      const { error: fnError } = await supabase.functions.invoke("delete-user", {
+        body: { target_user_id: u.id },
+      });
+      if (fnError) console.warn("No se pudo borrar el auth.users:", fnError);
+    } catch (e) {
+      console.warn("Edge function delete-user falló:", e);
+    }
+
     await reload();
     flash(`${label} eliminado`);
   };
