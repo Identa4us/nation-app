@@ -269,15 +269,33 @@ export default function App() {
     // 3) borrar tambien del auth.users via edge function (para liberar el email)
     try {
       const { error: fnError } = await supabase.functions.invoke("delete-user", {
-        body: { target_user_id: u.id },
+        body: { action: "delete", target_user_id: u.id },
       });
       if (fnError) console.warn("No se pudo borrar el auth.users:", fnError);
     } catch (e) {
-      console.warn("Edge function delete-user falló:", e);
+      console.warn("Edge function admin-users falló:", e);
     }
 
     await reload();
     flash(`${label} eliminado`);
+  };
+
+  const editUserAuth = async (u, { email, password }) => {
+    const label = u.full_name || u.email || "el usuario";
+    if (!email && !password) { flash("No hay cambios para guardar."); return { ok: false }; }
+    try {
+      const { data, error } = await supabase.functions.invoke("delete-user", {
+        body: { action: "update", target_user_id: u.id, email: email || undefined, password: password || undefined },
+      });
+      if (error) { flash("Error: " + (error.message || "no se pudo actualizar")); return { ok: false }; }
+      if (data?.error) { flash("Error: " + data.error); return { ok: false }; }
+      await reload();
+      flash(`${label} actualizado`);
+      return { ok: true };
+    } catch (e) {
+      flash("Error: " + (e.message || "no se pudo actualizar"));
+      return { ok: false };
+    }
   };
 
   const logout = async () => {
@@ -321,7 +339,7 @@ export default function App() {
     }
   };
 
-  const ctx = { profile, orders, profiles, accounts, reload, flash, notify, deleteOrder, deleteUser };
+  const ctx = { profile, orders, profiles, accounts, reload, flash, notify, deleteOrder, deleteUser, editUserAuth };
   const avatarColor = profile.role === "admin" ? "var(--gold)" : profile.role === "booster" ? "var(--cyan)" : "var(--violet)";
 
   return (
@@ -1194,10 +1212,11 @@ function BulkImportModal({ profiles, reload, flash, onClose }) {
     </div></div></div>;
 }
 
-function AdminBoosters({ orders, profiles, reload, flash, deleteUser }) {
+function AdminBoosters({ orders, profiles, reload, flash, deleteUser, editUserAuth }) {
   const boosters = profiles.filter((p) => p.role === "booster");
   const completed = orders.filter((o) => o.status === "completed");
   const active = orders.filter((o) => o.status === "in_progress");
+  const [editing, setEditing] = useState(null);
   const setCut = async (p, cut) => { await supabase.from("profiles").update({ cut }).eq("id", p.id); await reload(); flash(`Corte de ${p.full_name} → ${Math.round(cut * 100)}%`); };
   const setStatus = async (p, status) => { await supabase.from("profiles").update({ status }).eq("id", p.id); await reload(); flash(`${p.full_name}: ${status}`); };
 
@@ -1220,6 +1239,7 @@ function AdminBoosters({ orders, profiles, reload, flash, deleteUser }) {
           <td>{avg !== "—" ? avg + " ★" : "—"}</td>
           <td>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {editUserAuth && <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setEditing(b)} title="Editar email/contraseña"><Settings size={13} />Editar</button>}
               {b.status === "active"
                 ? <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setStatus(b, "disabled")}>Deshabilitar</button>
                 : <button className="nop-btn nop-btn-cyan nop-btn-sm" onClick={() => setStatus(b, "active")}>Habilitar</button>}
@@ -1228,7 +1248,41 @@ function AdminBoosters({ orders, profiles, reload, flash, deleteUser }) {
           </td>
         </tr>; })}</tbody>
     </table></div></div>
+    {editing && <EditAuthModal user={editing} onClose={() => setEditing(null)} onSave={editUserAuth} />}
   </>;
+}
+
+function EditAuthModal({ user, onClose, onSave }) {
+  const [email, setEmail] = useState(user.email || "");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    const emailChanged = email && email !== user.email;
+    const passwordChanged = password && password.length > 0;
+    if (!emailChanged && !passwordChanged) { onClose(); return; }
+    if (passwordChanged && password.length < 6) { alert("La contraseña debe tener al menos 6 caracteres."); return; }
+    setBusy(true);
+    const res = await onSave(user, { email: emailChanged ? email : null, password: passwordChanged ? password : null });
+    setBusy(false);
+    if (res?.ok) onClose();
+  };
+  return <div className="nop-modal" onClick={onClose}><div className="nop-card nop-modalbox" onClick={(e) => e.stopPropagation()}>
+    <div className="hd"><h3>Editar {user.full_name || "usuario"}</h3><button className="nop-iconbtn" onClick={onClose}><X size={16} /></button></div>
+    <div className="bd">
+      <div className="nop-field"><label>Email</label>
+        <input className="nop-input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+        <div className="nop-mini" style={{ marginTop: 6 }}>Se actualiza también en el perfil de la app.</div>
+      </div>
+      <div className="nop-field"><label>Nueva contraseña</label>
+        <input className="nop-input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Dejar vacío para no cambiar" />
+        <div className="nop-mini" style={{ marginTop: 6 }}>Mínimo 6 caracteres. Si dejás vacío, no se toca.</div>
+      </div>
+      <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+        <button className="nop-btn nop-btn-ghost" style={{ flex: 1 }} onClick={onClose}>Cancelar</button>
+        <button className="nop-btn nop-btn-gold" style={{ flex: 1 }} disabled={busy} onClick={save}>{busy ? "Guardando…" : "Guardar cambios"}<Check size={15} /></button>
+      </div>
+    </div>
+  </div></div>;
 }
 
 function AdminHistory({ orders, deleteOrder }) {
