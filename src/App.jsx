@@ -59,10 +59,13 @@ function singleMatchPrice(rank, games) {
 }
 const SINGLE_MATCH_OPTIONS = [
   { games: 1, label: "1 partida" },
-  { games: 4, label: "4 partidas (protección decaimiento)", off: 10 },
   { games: 5, label: "5 partidas", off: 10 },
   { games: 10, label: "10 partidas", off: 10 },
 ];
+// Pack 4 partidas (protección contra decaimiento) — precio fijo, solo disponible de Oro para arriba
+const SINGLE_MATCH_PROTECT_ARS = 14400;
+const SINGLE_MATCH_PROTECT_USD = 14.4;
+const PROTECT_ELIGIBLE_RANKS = ["Oro", "Platino", "Esmeralda", "Diamante", "Master"];
 // Placements: 5 partidas de inicio de temporada, con opción SoloQ o DuoQ
 const PLACEMENTS_ARS = { soloq: 9900, duoq: 15000 };
 const PLACEMENTS_USD = { soloq: 10, duoq: 13 };
@@ -2251,6 +2254,9 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
   const isSingleMatch = service === "single_match";
   const isPlacements = service === "placements";
   const [placementMode, setPlacementMode] = useState("soloq");
+  const [protectDec, setProtectDec] = useState(false);
+  const [placementChamp, setPlacementChamp] = useState(false);
+  const [placementChampName, setPlacementChampName] = useState("");
   const curPos = rankPos(cur, curD);
   const steps = rankPos(tgt, tgtD) - curPos;
   // Regla eloboost: como máximo 2 ligas adelante, y si es la segunda liga siguiente, solo hasta IV.
@@ -2272,6 +2278,36 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
     if (tgtRankIdx === maxTgtRankIdx && tgt !== "Master" && d !== "IV") return false;
     return true;
   });
+  // Reset protectDec si la liga elegida no es elegible (Hierro/Bronce/Plata)
+  useEffect(() => {
+    if (protectDec && !PROTECT_ELIGIBLE_RANKS.includes(cur)) setProtectDec(false);
+  }, [cur, protectDec]);
+  // Auto-corregir tgt/tgtD cuando la elección actual queda inválida (ej: pasar de Oro IV a Diamante IV)
+  useEffect(() => {
+    if (!isElo && isCoaching) return;
+    // Si el destino está fuera del rango permitido (o quedó igual o menor al actual), corregir
+    if (tgtRankIdx < curRankIdx || tgtRankIdx > maxTgtRankIdx || rankPos(tgt, tgtD) <= curPos || (isElo && eloTooFar)) {
+      // Elegir el primer destino válido: misma liga con div superior o siguiente liga
+      const curDivIdx = DIVS.indexOf(curD);
+      if (cur === "Master") {
+        // Ya está en Master, no hay destino posible
+        return;
+      }
+      if (curDivIdx > 0) {
+        // Misma liga, division superior (ej: Oro IV → Oro III)
+        setTgt(cur);
+        setTgtD(DIVS[curDivIdx - 1]);
+      } else {
+        // curD es "I", saltar a la siguiente liga en IV
+        const nextRank = RANKS[curRankIdx + 1];
+        if (nextRank) {
+          setTgt(nextRank);
+          setTgtD(nextRank === "Master" ? "IV" : "IV");
+        }
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cur, curD, service]);
   const lpSurcharge = lp === "+15" ? 1.1 : 1;
 
   const priceBoth = useMemo(() => {
@@ -2282,11 +2318,22 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
       const usd = blue ? Math.round((ars / blue) * 100) / 100 : null;
       base = { ars, usd };
     } else if (isSingleMatch) {
-      // single match: precio por partida segun liga, con 10% off en packs
-      base = singleMatchPrice(cur, games);
+      // Si tiene el pack protección de decaimiento activado (solo disponible Oro+), precio fijo
+      if (protectDec && PROTECT_ELIGIBLE_RANKS.includes(cur)) {
+        base = { ars: SINGLE_MATCH_PROTECT_ARS, usd: SINGLE_MATCH_PROTECT_USD };
+      } else {
+        base = singleMatchPrice(cur, games);
+      }
     } else if (isPlacements) {
       // placements: 5 partidas de inicio de temporada, precio segun modo (soloq/duoq)
-      base = { ars: PLACEMENTS_ARS[placementMode] || 0, usd: PLACEMENTS_USD[placementMode] || 0 };
+      let ars = PLACEMENTS_ARS[placementMode] || 0;
+      let usd = PLACEMENTS_USD[placementMode] || 0;
+      // Extra: en SoloQ, si eligió campeón específico, +50%
+      if (placementMode === "soloq" && placementChamp) {
+        ars = Math.round(ars * 1.5 / 100) * 100;
+        usd = Math.round(usd * 1.5 * 100) / 100;
+      }
+      base = { ars, usd };
     } else {
       // precio base (suma por división)
       let { ars, usd } = estimateBase(cur, curD, tgt, tgtD);
@@ -2324,7 +2371,7 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
       ars: Math.max(0, base.ars - discArs),
       usd: base.usd != null ? Math.max(0, base.usd - discUsd) : null,
     };
-  }, [service, cur, curD, tgt, tgtD, games, isCoaching, isElo, isSingleMatch, isPlacements, placementMode, rolOn, eloRoles, champOn, express, lp, blue, promo]);
+  }, [service, cur, curD, tgt, tgtD, games, isCoaching, isElo, isSingleMatch, isPlacements, placementMode, placementChamp, protectDec, rolOn, eloRoles, champOn, express, lp, blue, promo]);
   const price = priceBoth.ars;
   const usdAmount = priceBoth.usd;
   const SvcIc = ({ k }) => { const Ic = SERVICES[k].icon; return <Ic size={19} />; };
@@ -2368,10 +2415,10 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
         service, cur_rank: cur, cur_div: curD,
         tgt_rank: noTgt ? cur : tgt, tgt_div: noTgt ? curD : tgtD,
         server, lp: (isCoaching || isSingleMatch || isPlacements) ? null : lp,
-        games: (isCoaching || isSingleMatch) ? games : isPlacements ? 5 : null,
+        games: isCoaching ? games : isSingleMatch ? (protectDec ? 4 : games) : isPlacements ? 5 : null,
         role_champ: isCoaching ? `${roleChamp || "Sin preferencia"} · ${games} partida${games > 1 ? "s" : ""}`
-          : isSingleMatch ? `${games} partida${games > 1 ? "s" : ""}${roleChamp ? " · " + roleChamp : ""}`
-          : isPlacements ? `Placements ${placementMode.toUpperCase()} · 5 partidas${roleChamp ? " · " + roleChamp : ""}`
+          : isSingleMatch ? (protectDec ? "Pack protección decaimiento · 4 partidas" : `${games} partida${games > 1 ? "s" : ""}`)
+          : isPlacements ? `Placements ${placementMode.toUpperCase()} · 5 partidas${placementMode === "soloq" && placementChamp ? " · Campeón: " + (placementChampName || "específico") : ""}`
           : isElo ? eloDetail : roleChamp,
         notes, payment: currency === "ars" ? "Transferencia (pesos)" : "PayPal (USD)", price, status: "pending",
         receipt_path: path,
@@ -2429,16 +2476,22 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
               <select className="nop-select" value={cur} onChange={(e) => setCur(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
               <select className="nop-select" value={curD} onChange={(e) => setCurD(e.target.value)} disabled={cur === "Master"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select></div></div>
             <div className="nop-field"><label>Elegí paquete <span className="req">*</span></label>
-              <select className="nop-select" value={games} onChange={(e) => setGames(parseInt(e.target.value))}>
-                {SINGLE_MATCH_OPTIONS.map((o) => {
-                  const p = singleMatchPrice(cur, o.games);
-                  return (
-                    <option key={o.games} value={o.games}>{o.label} — {fmtARS(p.ars)}{o.off ? ` (${o.off}% off)` : ""}</option>
-                  );
-                })}
+              <select className="nop-select" value={games} onChange={(e) => setGames(parseInt(e.target.value))} disabled={protectDec}>
+                {SINGLE_MATCH_OPTIONS.map((o) => (
+                  <option key={o.games} value={o.games}>{o.label}{o.off ? ` (${o.off}% off)` : ""}</option>
+                ))}
               </select>
             </div>
           </div>
+          {PROTECT_ELIGIBLE_RANKS.includes(cur) && (
+            <div className="nop-field" style={{ marginTop: 6 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 9, cursor: "pointer" }}>
+                <input type="checkbox" checked={protectDec} onChange={(e) => setProtectDec(e.target.checked)} />
+                🛡️ Protección de decaimiento — pack de 4 partidas
+              </label>
+              <p className="nop-mini" style={{ marginTop: 6 }}>Recomendado para Diamante+ (mantiene tu contador de protección al máximo, ~28 días). Reemplaza el pack elegido arriba.</p>
+            </div>
+          )}
           <div className="nop-card" style={{ padding: 12, background: "rgba(52,211,153,.08)", border: "1px solid rgba(52,211,153,.3)", marginTop: 6, marginBottom: 10 }}>
             <div style={{ fontSize: 13, fontWeight: 600, color: "var(--grn)", marginBottom: 6 }}>✅ Winrate garantizado del 70%</div>
             <div className="nop-mini" style={{ lineHeight: 1.5 }}>
@@ -2460,8 +2513,8 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
         {isPlacements && <>
           <div className="nop-field" style={{ maxWidth: 420 }}><label>Modalidad <span className="req">*</span></label>
             <div className="nop-segwrap" style={{ marginBottom: 0 }}>
-              <button type="button" className={"nop-seg" + (placementMode === "soloq" ? " on" : "")} onClick={() => setPlacementMode("soloq")}>SoloQ · {fmtARS(PLACEMENTS_ARS.soloq)}</button>
-              <button type="button" className={"nop-seg" + (placementMode === "duoq" ? " on" : "")} onClick={() => setPlacementMode("duoq")}>DuoQ · {fmtARS(PLACEMENTS_ARS.duoq)}</button>
+              <button type="button" className={"nop-seg" + (placementMode === "soloq" ? " on" : "")} onClick={() => setPlacementMode("soloq")}>SoloQ</button>
+              <button type="button" className={"nop-seg" + (placementMode === "duoq" ? " on" : "")} onClick={() => setPlacementMode("duoq")}>DuoQ</button>
             </div>
           </div>
           <div className="nop-card" style={{ padding: 12, background: "rgba(251,146,60,.08)", border: "1px solid rgba(251,146,60,.3)", marginTop: 6, marginBottom: 10 }}>
@@ -2504,7 +2557,24 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
             <label style={{ display: "flex", alignItems: "center", gap: 9, cursor: "pointer" }}>
               <input type="checkbox" checked={express} onChange={(e) => setExpress(e.target.checked)} /> Entrega express <b style={{ color: "var(--gold)" }}>(+20%)</b>
               <span title="Te damos prioridad para asignarte un booster lo antes posible." style={{ cursor: "help", color: "var(--mut2)" }}>ⓘ</span></label></div>
-        </> : isSingleMatch ? null : <>
+        </> : isSingleMatch ? null : isPlacements ? (
+          placementMode === "soloq" ? <>
+            <div className="nop-field">
+              <label style={{ display: "flex", alignItems: "center", gap: 9, cursor: "pointer" }}>
+                <input type="checkbox" checked={placementChamp} onChange={(e) => setPlacementChamp(e.target.checked)} /> Campeón específico <b style={{ color: "var(--gold)" }}>(+50%)</b>
+              </label>
+              {placementChamp && <input className="nop-input" style={{ marginTop: 8 }} value={placementChampName} onChange={(e) => setPlacementChampName(e.target.value)} placeholder="¿Con qué campeón querés jugar? Ej: Yasuo" />}
+            </div>
+          </> : <>
+            <div className="nop-field"><label><CalendarDays size={13} style={{ verticalAlign: "-2px", marginRight: 5 }} />Días de preferencia</label>
+              <div className="nop-chiprow">{PREF_DAYS.map((d) => (
+                <button type="button" key={d} className={"nop-chip" + (days.includes(d) ? " on" : "")} onClick={() => toggleArr(days, setDays, d)}>{d}</button>))}</div></div>
+            <div className="nop-field"><label><Clock size={13} style={{ verticalAlign: "-2px", marginRight: 5 }} />Preferencia horaria</label>
+              <div className="nop-chiprow">{PREF_TIMES.map((t) => (
+                <button type="button" key={t} className={"nop-chip" + (times.includes(t) ? " on" : "")} onClick={() => toggleArr(times, setTimes, t)}>{t}</button>))}</div>
+              <p className="nop-mini" style={{ marginTop: 6 }}>Podés elegir varios (o todos). El booster los ve para coordinar.</p></div>
+          </>
+        ) : <>
           <div className="nop-field"><label>Rol / campeón preferido</label><input className="nop-input" value={roleChamp} onChange={(e) => setRoleChamp(e.target.value)} placeholder="Ej: ADC, Mid Katarina, Flash en D" /></div>
           <div className="nop-field"><label><CalendarDays size={13} style={{ verticalAlign: "-2px", marginRight: 5 }} />Días de preferencia</label>
             <div className="nop-chiprow">{PREF_DAYS.map((d) => (
