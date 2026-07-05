@@ -11,6 +11,9 @@ import { supabase } from "./supabaseClient";
 
 /* ===================== dominio ===================== */
 const RANKS = ["Hierro", "Bronce", "Plata", "Oro", "Platino", "Esmeralda", "Diamante", "Master"];
+// Boosters de prueba: se filtran del dashboard (KPIs, carga por booster) y no cuentan en el ratio.
+const TEST_BOOSTER_NAMES = ["Colorin70", "Booster Prueba"];
+const isTestBooster = (p) => p && TEST_BOOSTER_NAMES.some((n) => (p.full_name || "").trim().toLowerCase() === n.toLowerCase());
 const DIVS = ["IV", "III", "II", "I"];
 const RANK_COLOR = { Hierro: "#7B8497", Bronce: "#B07B3E", Plata: "#A8B3C7", Oro: "#E8B349", Platino: "#2DD4BF", Esmeralda: "#10B981", Diamante: "#38BDF8", Master: "#A855F7" };
 const SERVICES = {
@@ -895,8 +898,9 @@ function ClientDetailModal({ data, onClose, onDelete }) {
   </div></div>;
 }
 
-function AdminDash({ orders, profiles }) {
+function AdminDash({ orders, profiles, reload, flash, notify }) {
   const [month, setMonth] = useState("all");
+  const [assignFor, setAssignFor] = useState(null); // orden a la que le vamos a asignar booster
 
   const monthKey = (d) => { if (!d) return null; const x = new Date(d); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0"); };
   const monthLabel = (k) => { const [y, m] = k.split("-"); return new Date(y, m - 1, 1).toLocaleDateString("es-AR", { month: "long", year: "numeric" }); };
@@ -918,14 +922,12 @@ function AdminDash({ orders, profiles }) {
 
   // operativo en vivo (no depende del mes)
   const liveActive = orders.filter((o) => o.status === "in_progress");
-  const liveQueue = orders.filter((o) => o.status === "pending" || o.status === "available");
-  const boosters = profiles.filter((p) => p.role === "booster" && p.status === "active");
+  const liveQueue = orders.filter((o) => o.status === "available"); // en cola = validados sin booster
+  // Boosters reales (excluye cuentas de prueba)
+  const boosters = profiles.filter((p) => p.role === "booster" && p.status === "active" && !isTestBooster(p));
   const load = boosters.map((b) => ({ ...b, n: liveActive.filter((o) => o.booster_id === b.id).length }));
 
   // capacidad: ratio servicios activos por booster activo
-  // < 3 → celeste (podemos tomar más servicios)
-  // 3–5 → verde (óptimo)
-  // > 5 → rojo (saturado)
   const ratio = boosters.length > 0 ? liveActive.length / boosters.length : 0;
   const capacity = boosters.length === 0
     ? { color: "var(--mut2)", label: "Sin boosters activos" }
@@ -934,6 +936,19 @@ function AdminDash({ orders, profiles }) {
       : ratio <= 5
         ? { color: "var(--grn)", label: `Carga óptima · ${ratio.toFixed(1)}/booster` }
         : { color: "var(--red)", label: `Saturado · ${ratio.toFixed(1)}/booster` };
+
+  const assignBooster = async (order, booster) => {
+    const pay = Math.round(Number(order.price) * Number(booster.cut || 0.5));
+    const { error } = await supabase.from("orders")
+      .update({ status: "in_progress", booster_id: booster.id, booster_name: booster.full_name, booster_pay: pay, profit: Number(order.price) - pay, accepted_at: new Date().toISOString() })
+      .eq("id", order.id).eq("status", "available");
+    if (error) { flash("No se pudo asignar: " + error.message); return; }
+    await notify(`Se te asignó el pedido #${order.id} (${order.client_name}).`, null, booster.id, "new", "order", order.id);
+    await notify(`¡Tenés booster! ${booster.full_name} tomó tu servicio.`, null, order.client_id, "done", "order", order.id);
+    setAssignFor(null);
+    await reload();
+    flash(`Pedido #${order.id} asignado a ${booster.full_name}`);
+  };
 
   const kpi = (lbl, val, Icon, color, sub) => (
     <div className="nop-card nop-kpi"><div className="gl" style={{ background: color }} />
@@ -999,6 +1014,57 @@ function AdminDash({ orders, profiles }) {
             </tr>))}</tbody>
         </table></div>}
     </div>
+
+    <div className="nop-card nop-panel" style={{ marginTop: 14 }}>
+      <div className="nop-panel-h"><Clock size={15} style={{ color: "var(--amber)" }} />Pedidos en cola — sin booster ({liveQueue.length})</div>
+      {liveQueue.length === 0 ? <p className="nop-mini">No hay pedidos esperando booster.</p> :
+        <div className="nop-tablewrap"><table className="nop-t">
+          <thead><tr><th>#</th><th>Cliente</th><th>Servicio</th><th>Liga actual</th><th>Objetivo</th><th>Booster</th><th>Monto</th><th>Espera</th></tr></thead>
+          <tbody>{liveQueue.map((o) => (
+            <tr key={o.id}>
+              <td className="nop-mini">#{o.id}</td>
+              <td><b style={{ fontSize: 13 }}>{o.client_name}</b></td>
+              <td><SvcTag s={o.service} /></td>
+              <td><RankBadge r={o.cur_rank} d={o.cur_div} /></td>
+              <td>{o.service === "coaching" ? <span className="nop-mini">—</span> : <RankBadge r={o.tgt_rank} d={o.tgt_div} />}</td>
+              <td>
+                <button className="nop-btn nop-btn-gold nop-btn-sm" onClick={() => setAssignFor(o)}><UserCheck size={13} />Asignar</button>
+              </td>
+              <td style={{ color: "var(--gold)", fontWeight: 600 }}>{fmtARS(o.price)}</td>
+              <td className="nop-mini">{timeAgo(o.created_at)}</td>
+            </tr>))}</tbody>
+        </table></div>}
+    </div>
+
+    {assignFor && <div className="nop-modal" onClick={() => setAssignFor(null)}>
+      <div className="nop-card nop-modalbox" style={{ maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
+        <div className="hd"><h3>Asignar pedido #{assignFor.id}</h3><button className="nop-iconbtn" onClick={() => setAssignFor(null)}><X size={16} /></button></div>
+        <div className="bd">
+          <p className="nop-mini" style={{ marginBottom: 14 }}>Cliente: <b style={{ color: "var(--tx)" }}>{assignFor.client_name}</b> · {SERVICES[assignFor.service].label} · {fmtARS(assignFor.price)}</p>
+          <div className="nop-mini" style={{ marginBottom: 8 }}>Elegí el booster que se hace cargo:</div>
+          <div style={{ display: "grid", gap: 8 }}>
+            {boosters.length === 0
+              ? <div className="nop-mini" style={{ color: "var(--red)" }}>No hay boosters activos disponibles.</div>
+              : boosters.map((b) => {
+                const currentLoad = liveActive.filter((o) => o.booster_id === b.id).length;
+                const pay = Math.round(Number(assignFor.price) * Number(b.cut || 0.5));
+                return (
+                  <button key={b.id} className="nop-card" style={{ padding: 12, display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", background: "var(--bg2)", border: "1px solid var(--line)", textAlign: "left" }} onClick={() => assignBooster(assignFor, b)}>
+                    <div>
+                      <b style={{ fontSize: 14 }}>{b.full_name}</b>
+                      <div className="nop-mini">Corte {Math.round((b.cut || 0.5) * 100)}% · {currentLoad} activos</div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div className="nop-mini">Cobra</div>
+                      <b style={{ color: "var(--cyan)" }}>{fmtARS(pay)}</b>
+                    </div>
+                  </button>
+                );
+              })}
+          </div>
+        </div>
+      </div>
+    </div>}
   </>;
 }
 function AdminOrders({ orders, profiles, reload, flash, deleteOrder, notify }) {
@@ -1563,6 +1629,18 @@ function cell(c, o) {
     default: return null;
   }
 }
+function cleanRoleDetail(s) {
+  if (!s) return s;
+  return String(s)
+    .replace(/[·•]\s*⚡?\s*Express/gi, "")
+    .replace(/⚡\s*Express/gi, "")
+    .replace(/[·•]\s*LP\s*[+\-]?\d+/gi, "")
+    .replace(/\s*LP\s*[+\-]?\d+\s*$/gi, "")
+    .replace(/\s*[·•]\s*$/g, "")
+    .replace(/^\s*[·•]\s*/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
 function OrderModal({ o, onClose, onDelete, hideProfit }) {
   const F = ({ k, v }) => <div style={{ display: "flex", justifyContent: "space-between", gap: 16, padding: "9px 0", borderBottom: "1px solid var(--line)" }}><span className="nop-mini" style={{ flexShrink: 0 }}>{k}</span><span style={{ fontSize: 13, textAlign: "right" }}>{v}</span></div>;
   const S = ({ k, v, c }) => <div className="nop-card" style={{ padding: "12px 8px", background: "var(--bg2)" }}><div className="nop-mini">{k}</div><div className="nop-display" style={{ fontSize: 16, fontWeight: 700, color: c, marginTop: 4 }}>{v}</div></div>;
@@ -1575,7 +1653,7 @@ function OrderModal({ o, onClose, onDelete, hideProfit }) {
       {o.summoner && <F k="Invocador" v={o.summoner} />}
       <F k="Recorrido" v={<RankPath o={o} />} />
       <F k="Servidor / LP" v={`${o.server} · ${o.lp || "—"}`} />
-      {o.role_champ && <F k="Rol / detalle" v={o.role_champ} />}
+      {o.role_champ && cleanRoleDetail(o.role_champ) && <F k="Rol / detalle" v={cleanRoleDetail(o.role_champ)} />}
       {o.pref_days && <F k="Días de preferencia" v={o.pref_days} />}
       {o.pref_times && <F k="Horario de preferencia" v={o.pref_times} />}
       {o.notes && <F k="Notas del cliente" v={o.notes} />}
@@ -1954,7 +2032,7 @@ function BoosterBoard({ profile, orders, reload, flash, notify }) {
             {o.role_champ && /Camp[eé]on:/i.test(o.role_champ) && <span className="nop-svc" style={{ background: "rgba(232,179,73,.15)", borderColor: "var(--gold)", color: "var(--gold)" }}>🧙 Campeón</span>}
             {o.role_champ && (/Express/i.test(o.role_champ) || /⚡/.test(o.role_champ)) && <span className="nop-svc" style={{ background: "rgba(168,85,247,.15)", borderColor: "var(--violet)", color: "var(--violet)" }}>⚡ Express</span>}
           </div>
-          {o.role_champ && <div className="nop-mini" style={{ color: "var(--mut)", background: "var(--bg2)", padding: "8px 10px", borderRadius: 8, wordBreak: "break-word", overflowWrap: "break-word", fontSize: 12, lineHeight: 1.45 }}>{o.role_champ}</div>}
+          {o.role_champ && cleanRoleDetail(o.role_champ) && <div className="nop-mini" style={{ color: "var(--mut)", background: "var(--bg2)", padding: "8px 10px", borderRadius: 8, wordBreak: "break-word", overflowWrap: "break-word", fontSize: 12, lineHeight: 1.45 }}>{cleanRoleDetail(o.role_champ)}</div>}
           {(o.pref_days || o.pref_times) && <div className="nop-mini" style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
             {o.pref_days && <span><CalendarDays size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />{o.pref_days}</span>}
             {o.pref_times && <span><Clock size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />{o.pref_times}</span>}</div>}
