@@ -2326,8 +2326,7 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
             <select className="nop-select" value={curD} onChange={(e) => setCurD(e.target.value)} disabled={cur === "Master"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select></div></div>
           <div className="nop-field"><label>Cantidad de partidas</label>
             <select className="nop-select" value={games} onChange={(e) => setGames(parseInt(e.target.value))}><option value={1}>1 partida</option><option value={3}>3 partidas</option><option value={5}>5 partidas</option></select></div>
-        </div> : <>
-          {/* Single Match */}
+        </div> : isSingleMatch ? <>
           <div className="nop-row2">
             <div className="nop-field"><label>Tu liga actual <span className="req">*</span></label><div className="nop-row2">
               <select className="nop-select" value={cur} onChange={(e) => setCur(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
@@ -2343,17 +2342,29 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
               </select>
             </div>
           </div>
-        </>}
-        {isPlacements && <>
-          <div className="nop-row2">
-            <div className="nop-field"><label>Tu liga actual <span className="req">*</span></label><div className="nop-row2">
-              <select className="nop-select" value={cur} onChange={(e) => setCur(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
-              <select className="nop-select" value={curD} onChange={(e) => setCurD(e.target.value)} disabled={cur === "Master"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select></div></div>
-            <div className="nop-field"><label>Modalidad <span className="req">*</span></label>
-              <div className="nop-segwrap" style={{ marginBottom: 0 }}>
-                <button type="button" className={"nop-seg" + (placementMode === "soloq" ? " on" : "")} onClick={() => setPlacementMode("soloq")}>SoloQ · {fmtARS(PLACEMENTS_ARS.soloq)}</button>
-                <button type="button" className={"nop-seg" + (placementMode === "duoq" ? " on" : "")} onClick={() => setPlacementMode("duoq")}>DuoQ · {fmtARS(PLACEMENTS_ARS.duoq)}</button>
+          <div className="nop-card" style={{ padding: 12, background: "rgba(52,211,153,.08)", border: "1px solid rgba(52,211,153,.3)", marginTop: 6, marginBottom: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--grn)", marginBottom: 6 }}>✅ Winrate garantizado del 70%</div>
+            <div className="nop-mini" style={{ lineHeight: 1.5 }}>
+              Jugamos partidas clasificatorias en tu cuenta para que subas MMR sin jugarlas vos.
+              Podés comprar 1 partida suelta o packs con descuento.
+            </div>
+          </div>
+          {(cur === "Diamante" || cur === "Master") && (
+            <div className="nop-card" style={{ padding: 12, background: "rgba(56,189,248,.08)", border: "1px solid rgba(56,189,248,.3)", marginBottom: 10 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--cyan)", marginBottom: 6 }}>🛡️ Protección contra decaimiento (Diamante+)</div>
+              <div className="nop-mini" style={{ lineHeight: 1.5 }}>
+                En Diamante+ perdés LP por inactividad. Jugamos partidas clasificatorias en tu cuenta para mantener tu <b>contador de protección</b> al máximo, sin que tengas que jugar vos.<br /><br />
+                <b>Recomendado:</b> pack de 4 partidas por mes (~28 días de protección).<br />
+                <b>¿Cómo funciona?</b> Contratás el paquete, coordinamos horario y jugamos en tu cuenta. Podés revisar los días de protección en <b>Perfil &gt; Clasificatoria</b>. Cuando se te acabe o quieras renovar, nos avisás.
               </div>
+            </div>
+          )}
+        </> : null}
+        {isPlacements && <>
+          <div className="nop-field" style={{ maxWidth: 420 }}><label>Modalidad <span className="req">*</span></label>
+            <div className="nop-segwrap" style={{ marginBottom: 0 }}>
+              <button type="button" className={"nop-seg" + (placementMode === "soloq" ? " on" : "")} onClick={() => setPlacementMode("soloq")}>SoloQ · {fmtARS(PLACEMENTS_ARS.soloq)}</button>
+              <button type="button" className={"nop-seg" + (placementMode === "duoq" ? " on" : "")} onClick={() => setPlacementMode("duoq")}>DuoQ · {fmtARS(PLACEMENTS_ARS.duoq)}</button>
             </div>
           </div>
           <div className="nop-card" style={{ padding: 12, background: "rgba(251,146,60,.08)", border: "1px solid rgba(251,146,60,.3)", marginTop: 6, marginBottom: 10 }}>
