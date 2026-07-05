@@ -784,7 +784,7 @@ function AdminValidate({ orders, profiles, reload, flash, notify }) {
         <div style={{ display: "grid", gap: 12 }}>{pendingOrders.map((o) => (
           <div className="nop-card nop-panel" key={o.id} style={{ background: "var(--bg2)", display: "flex", justifyContent: "space-between", gap: 14, flexWrap: "wrap", alignItems: "center" }}>
             <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-              <b style={{ color: "var(--mut)" }}>#{o.id}</b><SvcTag s={o.service} /><RankPath o={o} />
+              <b style={{ color: "var(--mut)" }}>#{o.id}</b><SvcTag s={o.service} /><ExtrasTags o={o} /><RankPath o={o} />
               <div><b style={{ fontSize: 13 }}>{o.client_name}</b><div className="nop-mini">{o.client_discord} · {o.server} · {o.payment}</div>
                 {o.service === "eloboost" && o.role_champ && <div className="nop-mini" style={{ color: "var(--gold)", marginTop: 3 }}>{o.role_champ}</div>}
                 {o.service === "eloboost" && (o.acct_user || o.acct_pass) && <div className="nop-mini" style={{ marginTop: 2 }}>🔑 Credenciales cargadas (se asignan al booster al validar)</div>}
@@ -1536,12 +1536,24 @@ function OrdersTable({ orders, cols, onDelete, hideProfit }) {
     {open && <OrderModal o={open} onClose={() => setOpen(null)} onDelete={onDelete} hideProfit={hideProfit} />}
   </>;
 }
+function ExtrasTags({ o }) {
+  if (!o.role_champ) return null;
+  const hasRol = /Rol:/i.test(o.role_champ);
+  const hasChamp = /Camp[eé]on:/i.test(o.role_champ);
+  const hasExpress = /Express/i.test(o.role_champ) || /⚡/.test(o.role_champ);
+  if (!hasRol && !hasChamp && !hasExpress) return null;
+  return <>
+    {hasRol && <span className="nop-svc" style={{ background: "rgba(232,179,73,.15)", borderColor: "var(--gold)", color: "var(--gold)", fontSize: 11 }}>🎯 Rol</span>}
+    {hasChamp && <span className="nop-svc" style={{ background: "rgba(232,179,73,.15)", borderColor: "var(--gold)", color: "var(--gold)", fontSize: 11 }}>🧙 Camp.</span>}
+    {hasExpress && <span className="nop-svc" style={{ background: "rgba(168,85,247,.15)", borderColor: "var(--violet)", color: "var(--violet)", fontSize: 11 }}>⚡ Express</span>}
+  </>;
+}
 function cell(c, o) {
   switch (c) {
     case "id": return <b style={{ color: "var(--mut)" }}>#{o.id}</b>;
     case "cliente": return <><b>{o.client_name}</b><div className="nop-mini">{o.client_discord}</div></>;
     case "rank": return <RankPath o={o} />;
-    case "servicio": return <SvcTag s={o.service} />;
+    case "servicio": return <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}><SvcTag s={o.service} /><ExtrasTags o={o} /></div>;
     case "booster": return o.booster_name || <span className="nop-mini">Sin asignar</span>;
     case "precio": return <b>{fmtARS(o.price)}</b>;
     case "pago": return <span style={{ color: "var(--cyan)" }}>{fmtARS(o.booster_pay)}</span>;
@@ -1557,7 +1569,7 @@ function OrderModal({ o, onClose, onDelete, hideProfit }) {
   return <div className="nop-modal" onClick={onClose}><div className="nop-card nop-modalbox" onClick={(e) => e.stopPropagation()}>
     <div className="hd"><h3>Pedido #{o.id}</h3><button className="nop-iconbtn" onClick={onClose}><X size={16} /></button></div>
     <div className="bd">
-      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}><SvcTag s={o.service} /><StatusBadge s={o.status} /></div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}><SvcTag s={o.service} /><StatusBadge s={o.status} /><ExtrasTags o={o} /></div>
       <F k="Usuario" v={o.client_name || "—"} />
       <F k="Discord" v={o.client_discord || "—"} />
       {o.summoner && <F k="Invocador" v={o.summoner} />}
@@ -1932,10 +1944,17 @@ function BoosterBoard({ profile, orders, reload, flash, notify }) {
     <div className="nop-sectionhead"><div><h1 className="nop-h1">Trabajos disponibles</h1><p className="nop-sub">Clientes validados esperando booster. El primero que acepta se lo queda.</p></div></div>
     {open.length === 0 ? <Empty icon={Zap} title="No hay trabajos abiertos" sub="Apenas el admin valide un cliente nuevo, aparece acá al instante." /> :
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(300px,1fr))", gap: 14 }}>{open.map((o) => (
-        <div className="nop-card nop-panel" key={o.id} style={{ display: "flex", flexDirection: "column", gap: 13 }}>
+        <div className="nop-card nop-panel" key={o.id} style={{ display: "flex", flexDirection: "column", gap: 13, minWidth: 0 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><SvcTag s={o.service} /><span className="nop-mini">{timeAgo(o.created_at)}</span></div>
           <RankPath o={o} />
-          <div className="nop-pillrow"><span className="nop-svc">{o.server}</span>{o.lp && <span className="nop-svc">{o.lp} LP</span>}{o.role_champ && <span className="nop-svc">{o.role_champ}</span>}</div>
+          <div className="nop-pillrow">
+            <span className="nop-svc">{o.server}</span>
+            {o.lp && <span className="nop-svc">{o.lp} LP</span>}
+            {o.role_champ && /Rol:/i.test(o.role_champ) && <span className="nop-svc" style={{ background: "rgba(232,179,73,.15)", borderColor: "var(--gold)", color: "var(--gold)" }}>🎯 Rol</span>}
+            {o.role_champ && /Camp[eé]on:/i.test(o.role_champ) && <span className="nop-svc" style={{ background: "rgba(232,179,73,.15)", borderColor: "var(--gold)", color: "var(--gold)" }}>🧙 Campeón</span>}
+            {o.role_champ && (/Express/i.test(o.role_champ) || /⚡/.test(o.role_champ)) && <span className="nop-svc" style={{ background: "rgba(168,85,247,.15)", borderColor: "var(--violet)", color: "var(--violet)" }}>⚡ Express</span>}
+          </div>
+          {o.role_champ && <div className="nop-mini" style={{ color: "var(--mut)", background: "var(--bg2)", padding: "8px 10px", borderRadius: 8, wordBreak: "break-word", overflowWrap: "break-word", fontSize: 12, lineHeight: 1.45 }}>{o.role_champ}</div>}
           {(o.pref_days || o.pref_times) && <div className="nop-mini" style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
             {o.pref_days && <span><CalendarDays size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />{o.pref_days}</span>}
             {o.pref_times && <span><Clock size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />{o.pref_times}</span>}</div>}
