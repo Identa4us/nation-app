@@ -41,14 +41,24 @@ const PRICE_DIAMANTE_ARS = { IV: 12000, III: 14400, II: 18000, I: 18000 };
 const PRICE_DIAMANTE_USD = { IV: 12, III: 14.4, II: 18, I: 18 };
 const LANES = ["Top", "Jungla", "Mid", "ADC", "Support"];
 const COACHING_PRICE = { 1: 15000, 3: 35000, 5: 50000 };
-// Single Match: precios por cantidad de partidas (pack 4 pensado para proteccion decaimiento Diamante+)
-const SINGLE_MATCH_ARS = { 1: 4000, 4: 14400, 5: 18000, 10: 34000 };
-const SINGLE_MATCH_USD = { 1: 4, 4: 14.4, 5: 18, 10: 34 };
+// Single Match: precio por partida según la liga (ascendente Hierro→Master)
+const SINGLE_MATCH_PER_GAME_ARS = { Hierro: 2500, Bronce: 3000, Plata: 3500, Oro: 4000, Platino: 4500, Esmeralda: 5000, Diamante: 5500, Master: 6000 };
+const SINGLE_MATCH_PER_GAME_USD = { Hierro: 2.5, Bronce: 3, Plata: 3.5, Oro: 4, Platino: 4.5, Esmeralda: 5, Diamante: 5.5, Master: 6 };
+// Cualquier pack (4, 5, 10 partidas) aplica 10% de descuento
+function singleMatchPrice(rank, games) {
+  const arsPer = SINGLE_MATCH_PER_GAME_ARS[rank] || 4000;
+  const usdPer = SINGLE_MATCH_PER_GAME_USD[rank] || 4;
+  const disc = games > 1 ? 0.9 : 1;
+  return {
+    ars: Math.round((arsPer * games * disc) / 100) * 100,
+    usd: Math.round((usdPer * games * disc) * 100) / 100,
+  };
+}
 const SINGLE_MATCH_OPTIONS = [
-  { games: 1, label: "1 partida", off: 0 },
+  { games: 1, label: "1 partida" },
   { games: 4, label: "4 partidas (protección decaimiento)", off: 10 },
   { games: 5, label: "5 partidas", off: 10 },
-  { games: 10, label: "10 partidas", off: 15 },
+  { games: 10, label: "10 partidas", off: 10 },
 ];
 // Placements: 5 partidas de inicio de temporada, con opción SoloQ o DuoQ
 const PLACEMENTS_ARS = { soloq: 9900, duoq: 15000 };
@@ -1914,6 +1924,8 @@ function BoosterBoard({ profile, orders, reload, flash, notify }) {
     if (!data || data.length === 0) { flash("Otro booster lo tomó primero."); await reload(); return; }
     await notify(`${profile.full_name} aceptó el pedido #${o.id} (${o.client_name}).`, "admin", null, "done", "order", o.id);
     await notify(`¡Tenés booster! ${profile.full_name} tomó tu servicio. Coordinen por Discord.`, null, o.client_id, "done", "order", o.id);
+    // Mail al cliente (fire and forget, no bloquea si falla)
+    supabase.functions.invoke("notify-client-email", { body: { event: "booster_assigned", order_id: o.id } }).then(() => {}, () => {});
     await reload(); flash(`Aceptaste el pedido #${o.id}`);
   };
   return <>
@@ -2173,8 +2185,8 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
       const usd = blue ? Math.round((ars / blue) * 100) / 100 : null;
       base = { ars, usd };
     } else if (isSingleMatch) {
-      // single match: precio fijo por cantidad de partidas
-      base = { ars: SINGLE_MATCH_ARS[games] || 0, usd: SINGLE_MATCH_USD[games] || 0 };
+      // single match: precio por partida segun liga, con 10% off en packs
+      base = singleMatchPrice(cur, games);
     } else if (isPlacements) {
       // placements: 5 partidas de inicio de temporada, precio segun modo (soloq/duoq)
       base = { ars: PLACEMENTS_ARS[placementMode] || 0, usd: PLACEMENTS_USD[placementMode] || 0 };
@@ -2300,7 +2312,7 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
             <div className="ic" style={{ background: SERVICES[k].color + "1f", color: SERVICES[k].color }}><SvcIc k={k} /></div>
             <h4>{SERVICES[k].label}</h4><p>{SERVICES[k].desc}</p></button>))}</div>
 
-        <label style={{ fontSize: 12, fontWeight: 600, color: "var(--mut)", display: "block", margin: "6px 0 12px" }}>2 · {isCoaching ? "Tu nivel y cuántas partidas" : isSingleMatch ? "Tu liga y cantidad de partidas" : isPlacements ? "Tu liga y modalidad" : "Liga actual y objetivo"}</label>
+        {!isPlacements && <label style={{ fontSize: 12, fontWeight: 600, color: "var(--mut)", display: "block", margin: "6px 0 12px" }}>2 · {isCoaching ? "Tu nivel y cuántas partidas" : isSingleMatch ? "Tu liga y cantidad de partidas" : "Liga actual y objetivo"}</label>}
         {!isCoaching && !isSingleMatch && !isPlacements ? <div className="nop-row2" style={{ marginBottom: 4 }}>
           <div className="nop-field" style={{ marginBottom: 8 }}><label>Liga actual <span className="req">*</span></label><div className="nop-row2">
             <select className="nop-select" value={cur} onChange={(e) => setCur(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
@@ -2322,29 +2334,15 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
               <select className="nop-select" value={curD} onChange={(e) => setCurD(e.target.value)} disabled={cur === "Master"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select></div></div>
             <div className="nop-field"><label>Elegí paquete <span className="req">*</span></label>
               <select className="nop-select" value={games} onChange={(e) => setGames(parseInt(e.target.value))}>
-                {SINGLE_MATCH_OPTIONS.map((o) => (
-                  <option key={o.games} value={o.games}>{o.label} — {fmtARS(SINGLE_MATCH_ARS[o.games])}{o.off > 0 ? ` (${o.off}% off)` : ""}</option>
-                ))}
+                {SINGLE_MATCH_OPTIONS.map((o) => {
+                  const p = singleMatchPrice(cur, o.games);
+                  return (
+                    <option key={o.games} value={o.games}>{o.label} — {fmtARS(p.ars)}{o.off ? ` (${o.off}% off)` : ""}</option>
+                  );
+                })}
               </select>
             </div>
           </div>
-          <div className="nop-card" style={{ padding: 12, background: "rgba(52,211,153,.08)", border: "1px solid rgba(52,211,153,.3)", marginTop: 6, marginBottom: 10 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--grn)", marginBottom: 6 }}>✅ Winrate garantizado del 70%</div>
-            <div className="nop-mini" style={{ lineHeight: 1.5 }}>
-              Jugamos partidas clasificatorias en tu cuenta para que subas MMR sin jugarlas vos.
-              Podés comprar 1 partida suelta o packs con descuento.
-            </div>
-          </div>
-          {(cur === "Diamante" || cur === "Master") && (
-            <div className="nop-card" style={{ padding: 12, background: "rgba(56,189,248,.08)", border: "1px solid rgba(56,189,248,.3)", marginBottom: 10 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--cyan)", marginBottom: 6 }}>🛡️ Protección contra decaimiento (Diamante+)</div>
-              <div className="nop-mini" style={{ lineHeight: 1.5 }}>
-                En Diamante+ perdés LP por inactividad. Jugamos partidas clasificatorias en tu cuenta para mantener tu <b>contador de protección</b> al máximo, sin que tengas que jugar vos.<br /><br />
-                <b>Recomendado:</b> pack de 4 partidas por mes (~28 días de protección).<br />
-                <b>¿Cómo funciona?</b> Contratás el paquete, coordinamos horario y jugamos en tu cuenta. Podés revisar los días de protección en <b>Perfil &gt; Clasificatoria</b>. Cuando se te acabe o quieras renovar, nos avisás.
-              </div>
-            </div>
-          )}
         </>}
         {isPlacements && <>
           <div className="nop-row2">
@@ -2398,7 +2396,7 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
             <label style={{ display: "flex", alignItems: "center", gap: 9, cursor: "pointer" }}>
               <input type="checkbox" checked={express} onChange={(e) => setExpress(e.target.checked)} /> Entrega express <b style={{ color: "var(--gold)" }}>(+20%)</b>
               <span title="Te damos prioridad para asignarte un booster lo antes posible." style={{ cursor: "help", color: "var(--mut2)" }}>ⓘ</span></label></div>
-        </> : <>
+        </> : isSingleMatch ? null : <>
           <div className="nop-field"><label>Rol / campeón preferido</label><input className="nop-input" value={roleChamp} onChange={(e) => setRoleChamp(e.target.value)} placeholder="Ej: ADC, Mid Katarina, Flash en D" /></div>
           <div className="nop-field"><label><CalendarDays size={13} style={{ verticalAlign: "-2px", marginRight: 5 }} />Días de preferencia</label>
             <div className="nop-chiprow">{PREF_DAYS.map((d) => (
