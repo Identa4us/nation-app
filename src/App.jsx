@@ -696,6 +696,12 @@ function AdminValidate({ orders, profiles, reload, flash, notify }) {
     await notify(`🆕 Nuevo cliente disponible: ${o.client_name} — ${SERVICES[o.service].label}.`, "booster", null, "new", "order", o.id);
     await reload(); flash(`Pedido #${o.id} validado y publicado`);
   };
+  const rejectOrder = async (o) => {
+    if (!window.confirm(`¿Rechazar el pedido #${o.id} de ${o.client_name}?\n\nEl cliente será notificado y el pedido queda cancelado.`)) return;
+    await supabase.from("orders").update({ status: "cancelled" }).eq("id", o.id);
+    await notify(`❌ Tu pedido fue rechazado. Contactá al equipo si tenés dudas.`, null, o.client_id, "warn", "order", o.id);
+    await reload(); flash(`Pedido #${o.id} rechazado`);
+  };
   const rankText = (o) => {
     const f = `${o.cur_rank}${o.cur_rank !== "Master" ? " " + o.cur_div : ""}`;
     if (o.service === "coaching") return f;
@@ -765,6 +771,7 @@ function AdminValidate({ orders, profiles, reload, flash, notify }) {
               <button className="nop-btn nop-btn-cyan nop-btn-sm" onClick={() => viewReceipt(o)} disabled={!o.receipt_path}><FileText size={14} />{o.receipt_path ? "Ver comprobante" : "Sin comprobante"}</button>
               <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => validateOrder(o)}><Check size={14} />Validar</button>
               <button className="nop-btn nop-btn-wa nop-btn-sm" onClick={() => validateAndShare(o)}><Send size={14} />Validar y avisar</button>
+              <button className="nop-btn nop-btn-danger nop-btn-sm" onClick={() => rejectOrder(o)}><X size={14} />Rechazar</button>
             </div>
           </div>))}</div>}
     </div>
@@ -970,17 +977,19 @@ function AdminDash({ orders, profiles }) {
     </div>
   </>;
 }
-function AdminOrders({ orders, profiles, reload, flash, deleteOrder }) {
+function AdminOrders({ orders, profiles, reload, flash, deleteOrder, notify }) {
   const [f, setF] = useState("todos");
   const [q, setQ] = useState("");
   const [showImport, setShowImport] = useState(false);
   const [showReports, setShowReports] = useState(false);
+  const [showNew, setShowNew] = useState(false);
   let list = orders;
   if (f !== "todos") list = list.filter((o) => o.status === f);
   if (q) list = list.filter((o) => (o.client_name + (o.client_discord || "") + o.id).toLowerCase().includes(q.toLowerCase()));
   return <>
     <div className="nop-sectionhead"><div><h1 className="nop-h1">Pedidos</h1><p className="nop-sub">Todos los servicios, en cualquier estado.</p></div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <button className="nop-btn nop-btn-gold nop-btn-sm" onClick={() => setShowNew(true)}><Plus size={14} />Nuevo pedido</button>
         <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setShowReports(true)}><FileText size={14} />Reportes</button>
         <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setShowImport(true)}><Upload size={14} />Carga masiva</button>
       </div></div>
@@ -998,7 +1007,202 @@ function AdminOrders({ orders, profiles, reload, flash, deleteOrder }) {
     </div>
     {showImport && <BulkImportModal profiles={profiles || []} reload={reload} flash={flash} onClose={() => setShowImport(false)} />}
     {showReports && <ReportsModal orders={orders} flash={flash} onClose={() => setShowReports(false)} />}
+    {showNew && <NewOrderModal profiles={profiles || []} reload={reload} flash={flash} notify={notify} onClose={() => setShowNew(false)} />}
   </>;
+}
+
+function NewOrderModal({ profiles, reload, flash, notify, onClose }) {
+  const clients = profiles.filter((p) => p.role === "cliente");
+  const boosters = profiles.filter((p) => p.role === "booster" && p.status === "active");
+  const [clientId, setClientId] = useState("");
+  const [clientNameManual, setClientNameManual] = useState("");
+  const [clientDiscordManual, setClientDiscordManual] = useState("");
+  const [service, setService] = useState("eloboost");
+  const [cur, setCur] = useState("Oro"), [curD, setCurD] = useState("IV");
+  const [tgt, setTgt] = useState("Platino"), [tgtD, setTgtD] = useState("IV");
+  const [server, setServer] = useState("LAS");
+  const [games, setGames] = useState(3);
+  const [summoner, setSummoner] = useState("");
+  const [notes, setNotes] = useState("");
+  const [priceManual, setPriceManual] = useState("");
+  const [currency, setCurrency] = useState("ars");
+  const [assign, setAssign] = useState("");                // booster_id
+  const [payment, setPayment] = useState("Transferencia (pesos)");
+  const [busy, setBusy] = useState(false);
+
+  const isCoach = service === "coaching";
+  const isElo = service === "eloboost";
+  const priceAuto = useMemo(() => {
+    if (isCoach) return COACHING_PRICE[games];
+    return estimateBase(cur, curD, tgt, tgtD).ars;
+  }, [service, cur, curD, tgt, tgtD, games, isCoach]);
+  const finalPrice = priceManual ? Number(priceManual) : priceAuto;
+
+  const shareWhatsApp = (orderId, clientName, booster) => {
+    const link = window.location.origin;
+    const msg = [
+      "🎯 *NUEVO TRABAJO ASIGNADO* — Eloboost Nation", "",
+      `👤 *Cliente:* ${clientName}`,
+      `🎮 *Servicio:* ${SERVICES[service].label}`,
+      `📈 *Rango:* ${cur} ${curD}${isCoach ? "" : " → " + tgt + " " + tgtD}`,
+      `🌎 *Servidor:* ${server}`,
+      booster ? `\n👉 Asignado a: ${booster.full_name}` : "",
+      "", `Entrá a la app: ${link}`,
+    ].filter(Boolean).join("\n");
+    window.open("https://wa.me/?text=" + encodeURIComponent(msg), "_blank");
+  };
+
+  const save = async (opts = {}) => {
+    // Cliente: si eligió uno de la lista, tomo sus datos; si no, uso los manuales
+    let cliId = null, cliName = clientNameManual.trim(), cliDiscord = clientDiscordManual.trim();
+    if (clientId) {
+      const c = clients.find((x) => x.id === clientId);
+      if (c) { cliId = c.id; cliName = c.full_name; cliDiscord = c.discord || c.email; }
+    }
+    if (!cliName) { flash("Elegí un cliente o ingresá el nombre manualmente."); return; }
+    if (!finalPrice || finalPrice <= 0) { flash("Ingresá un precio válido."); return; }
+
+    setBusy(true);
+    // Si se asigna a booster, el status pasa directo a in_progress
+    const boosterProfile = assign ? boosters.find((b) => b.id === assign) : null;
+    const status = boosterProfile ? "in_progress" : "available";
+    const boosterPay = boosterProfile ? Math.round(Number(finalPrice) * Number(boosterProfile.cut || 0.5)) : null;
+
+    const row = {
+      client_id: cliId, client_name: cliName, client_discord: cliDiscord,
+      service, cur_rank: cur, cur_div: curD,
+      tgt_rank: isCoach ? cur : tgt, tgt_div: isCoach ? curD : tgtD,
+      server, lp: isCoach ? null : "0-30",
+      games: isCoach ? games : null,
+      role_champ: isCoach ? `Sin preferencia · ${games} partida${games > 1 ? "s" : ""}` : "",
+      notes: notes || "Pedido creado por admin (sin comprobante).",
+      payment, price: finalPrice, status,
+      receipt_path: null,
+      summoner: summoner || null,
+      currency, usd_amount: null, fx_rate: null,
+      booster_id: boosterProfile?.id || null,
+      booster_pay: boosterPay,
+    };
+    const { data: created, error } = await supabase.from("orders").insert(row).select("id").single();
+    setBusy(false);
+    if (error) { flash("Error: " + error.message); return; }
+
+    // Notificar
+    if (boosterProfile) {
+      await notify(`🎯 Nuevo trabajo asignado: ${cliName} — ${SERVICES[service].label}.`, null, boosterProfile.id, "new", "order", created.id);
+    } else {
+      await notify(`🆕 Nuevo cliente disponible: ${cliName} — ${SERVICES[service].label}.`, "booster", null, "new", "order", created.id);
+    }
+
+    if (opts.whatsapp) shareWhatsApp(created.id, cliName, boosterProfile);
+    await reload();
+    flash(`Pedido #${created.id} creado${boosterProfile ? " y asignado a " + boosterProfile.full_name : " (disponible para tomar)"}`);
+    onClose();
+  };
+
+  return <div className="nop-modal" onClick={onClose}><div className="nop-card nop-modalbox" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 640 }}>
+    <div className="hd"><h3>Nuevo pedido</h3><button className="nop-iconbtn" onClick={onClose}><X size={16} /></button></div>
+    <div className="bd">
+      {/* Cliente */}
+      <div className="nop-field"><label>Cliente</label>
+        <select className="nop-select" value={clientId} onChange={(e) => setClientId(e.target.value)}>
+          <option value="">— Ingresar manualmente —</option>
+          {clients.map((c) => <option key={c.id} value={c.id}>{c.full_name || c.email}</option>)}
+        </select>
+        <div className="nop-mini" style={{ marginTop: 6 }}>Elegí uno existente o cargá los datos abajo.</div>
+      </div>
+      {!clientId && (
+        <div className="nop-row2">
+          <div className="nop-field"><label>Nombre <span className="req">*</span></label>
+            <input className="nop-input" value={clientNameManual} onChange={(e) => setClientNameManual(e.target.value)} placeholder="Ej: Juan Pérez" /></div>
+          <div className="nop-field"><label>Discord / Email</label>
+            <input className="nop-input" value={clientDiscordManual} onChange={(e) => setClientDiscordManual(e.target.value)} placeholder="Ej: juan#1234" /></div>
+        </div>
+      )}
+
+      {/* Servicio */}
+      <div className="nop-field"><label>Servicio <span className="req">*</span></label>
+        <div className="nop-segwrap" style={{ marginBottom: 0, gridTemplateColumns: "repeat(4,1fr)" }}>
+          {["eloboost", "duoboost", "combo", "coaching"].map((k) => (
+            <button key={k} type="button" className={"nop-seg" + (service === k ? " on" : "")} onClick={() => setService(k)}>{SERVICES[k].label}</button>
+          ))}
+        </div>
+      </div>
+
+      {/* Rangos o coaching */}
+      {!isCoach ? (
+        <>
+          <div className="nop-row2">
+            <div className="nop-field"><label>Rango actual</label>
+              <div style={{ display: "flex", gap: 6 }}>
+                <select className="nop-select" value={cur} onChange={(e) => setCur(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
+                {cur !== "Master" && <select className="nop-select" value={curD} onChange={(e) => setCurD(e.target.value)}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select>}
+              </div>
+            </div>
+            <div className="nop-field"><label>Rango objetivo</label>
+              <div style={{ display: "flex", gap: 6 }}>
+                <select className="nop-select" value={tgt} onChange={(e) => setTgt(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
+                {tgt !== "Master" && <select className="nop-select" value={tgtD} onChange={(e) => setTgtD(e.target.value)}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select>}
+              </div>
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="nop-row2">
+          <div className="nop-field"><label>Rango actual</label>
+            <div style={{ display: "flex", gap: 6 }}>
+              <select className="nop-select" value={cur} onChange={(e) => setCur(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
+              {cur !== "Master" && <select className="nop-select" value={curD} onChange={(e) => setCurD(e.target.value)}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select>}
+            </div>
+          </div>
+          <div className="nop-field"><label>Partidas</label>
+            <select className="nop-select" value={games} onChange={(e) => setGames(Number(e.target.value))}>
+              <option value={1}>1</option><option value={3}>3</option><option value={5}>5</option>
+            </select>
+          </div>
+        </div>
+      )}
+
+      <div className="nop-row2">
+        <div className="nop-field"><label>Servidor</label>
+          <select className="nop-select" value={server} onChange={(e) => setServer(e.target.value)}>
+            <option>LAS</option><option>LAN</option><option>BR</option>
+          </select></div>
+        <div className="nop-field"><label>Summoner (opcional)</label>
+          <input className="nop-input" value={summoner} onChange={(e) => setSummoner(e.target.value)} placeholder="Ej: Fakality#OTP" /></div>
+      </div>
+
+      {/* Precio */}
+      <div className="nop-row2">
+        <div className="nop-field"><label>Precio (sugerido: {fmtARS(priceAuto)})</label>
+          <input className="nop-input" type="number" value={priceManual} onChange={(e) => setPriceManual(e.target.value)} placeholder={String(priceAuto)} /></div>
+        <div className="nop-field"><label>Moneda / Pago</label>
+          <select className="nop-select" value={payment} onChange={(e) => { setPayment(e.target.value); setCurrency(e.target.value.includes("PayPal") ? "usd" : "ars"); }}>
+            <option>Transferencia (pesos)</option>
+            <option>PayPal (USD)</option>
+            <option>Otro</option>
+          </select></div>
+      </div>
+
+      {/* Asignación */}
+      <div className="nop-field"><label>Asignar a booster (opcional)</label>
+        <select className="nop-select" value={assign} onChange={(e) => setAssign(e.target.value)}>
+          <option value="">— Dejar disponible para que lo tomen —</option>
+          {boosters.map((b) => <option key={b.id} value={b.id}>{b.full_name} · corte {Math.round((b.cut || 0.5) * 100)}%</option>)}
+        </select>
+        <div className="nop-mini" style={{ marginTop: 6 }}>Si asignás, el pedido va directo a "En curso" para ese booster.</div>
+      </div>
+
+      <div className="nop-field"><label>Notas internas</label>
+        <textarea className="nop-ta" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Cualquier dato adicional…" /></div>
+
+      <div style={{ display: "flex", gap: 10, marginTop: 8, flexWrap: "wrap" }}>
+        <button className="nop-btn nop-btn-ghost" style={{ flex: 1, minWidth: 120 }} onClick={onClose}>Cancelar</button>
+        <button className="nop-btn nop-btn-wa" style={{ flex: 1, minWidth: 120 }} disabled={busy} onClick={() => save({ whatsapp: true })}><Send size={14} />Guardar y avisar WA</button>
+        <button className="nop-btn nop-btn-gold" style={{ flex: 1, minWidth: 120 }} disabled={busy} onClick={() => save({})}>{busy ? "Guardando…" : "Guardar pedido"}<Check size={15} /></button>
+      </div>
+    </div>
+  </div></div>;
 }
 
 function parseCSV(text) {
@@ -1924,7 +2128,10 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
   const curPos = rankPos(cur, curD);
   const steps = rankPos(tgt, tgtD) - curPos;       // divisiones a subir (1 liga = 4)
   const eloTooFar = isElo && steps > 8;            // máximo 2 ligas = 8 divisiones
+  // Ningún servicio con rango objetivo (elo/duoboost/combo) puede tener destino <= actual
+  const rankInvalid = !isCoaching && steps <= 0;
   const eloInvalid = isElo && (steps <= 0 || steps > 8);
+  const stepInvalid = rankInvalid || eloInvalid;
   // límites de selección para eloboost (no más de 2 ligas)
   const eloTgtRanks = RANKS.filter((r, i) => i >= RANKS.indexOf(cur) && i <= RANKS.indexOf(cur) + 2);
   const eloTgtDivs = DIVS.filter((d) => { const s = rankPos(tgt, d) - curPos; return s > 0 && s <= 8; });
@@ -2032,7 +2239,7 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
       const { data: created, error } = await supabase.from("orders").insert(row).select("id").single();
       if (error) throw error;
       // incrementar contador del promo (fire and forget, no bloquea si falla)
-      if (promo?.id) { supabase.rpc("increment_promo_usage", { p_code_id: promo.id }).catch(() => {}); }
+      if (promo?.id) { supabase.rpc("increment_promo_usage", { p_code_id: promo.id }).then(() => {}, () => {}); }
       try { localStorage.removeItem(DRAFT_KEY); } catch (e) {}
       await notify(`Nuevo pedido de ${profile.full_name} — ${SERVICES[service].label} — entró por validar (con comprobante).`, "admin", null, "new", "order", created?.id);
       await reload(); flash("¡Pedido enviado! Validamos el comprobante y pasa a los boosters."); setTab("home");
@@ -2069,10 +2276,11 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
           <div className="nop-field"><label>Cantidad de partidas</label>
             <select className="nop-select" value={games} onChange={(e) => setGames(parseInt(e.target.value))}><option value={1}>1 partida</option><option value={3}>3 partidas</option><option value={5}>5 partidas</option></select></div>
         </div>}
-        {isElo && <div className={"nop-" + (eloInvalid ? "err" : "ok")} style={{ marginTop: 4 }}>
+        {!isCoaching && <div className={"nop-" + (stepInvalid ? "err" : "ok")} style={{ marginTop: 4 }}>
           {eloTooFar ? "🔒 Por seguridad subimos como máximo 2 ligas por solicitud (ej: Hierro → Plata). Reducí la liga objetivo."
-            : rankPos(tgt, tgtD) <= rankPos(cur, curD) ? "La liga objetivo tiene que ser más alta que la actual."
-              : "✅ Recorrido válido. Por seguridad solo subimos hasta 2 ligas por solicitud."}
+            : rankInvalid ? "La liga objetivo tiene que ser más alta que la actual. No podés pedir bajar de división."
+              : isElo ? "✅ Recorrido válido. Por seguridad solo subimos hasta 2 ligas por solicitud."
+                : "✅ Recorrido válido."}
         </div>}
 
         <label style={{ fontSize: 12, fontWeight: 600, color: "var(--mut)", display: "block", margin: "10px 0 12px" }}>3 · Detalles</label>
@@ -2116,26 +2324,30 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
 
         <div className="nop-card" style={{ padding: 16, background: "var(--bg2)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 14 }}>
           <div>
-            <div className="nop-display" style={{ fontSize: 26, fontWeight: 700, color: "var(--gold)", lineHeight: 1.1 }}>
-              {server === "LAS" ? (
-                <>{fmtARS(price)} <span style={{ fontSize: 18, color: "var(--violet)" }}>· {usdAmount ? fmtUSD(usdAmount) : "—"}</span></>
-              ) : (
-                <span style={{ color: "var(--violet)" }}>{usdAmount ? fmtUSD(usdAmount) : "—"}</span>
-              )}
-            </div>
-            {(service === "combo" || (isElo && ((lpSurcharge > 1) || (rolOn && eloRoles.length > 0) || champOn || express))) && (
-              <div className="nop-mini" style={{ marginTop: 6 }}>
-                {[
-                  service === "combo" && "coaching en vivo +50%",
-                  isElo && lpSurcharge > 1 && "+10% LP",
-                  isElo && rolOn && eloRoles.length > 0 && "+30% rol",
-                  isElo && champOn && "+50% campeón",
-                  isElo && express && "+20% express",
-                ].filter(Boolean).join(" · ")}
+            {stepInvalid ? (
+              <div className="nop-mini" style={{ color: "var(--red)", fontSize: 13 }}>Ajustá la liga objetivo para ver el precio.</div>
+            ) : <>
+              <div className="nop-display" style={{ fontSize: 26, fontWeight: 700, color: "var(--gold)", lineHeight: 1.1 }}>
+                {server === "LAS" ? (
+                  <>{fmtARS(price)} <span style={{ fontSize: 18, color: "var(--violet)" }}>· {usdAmount ? fmtUSD(usdAmount) : "—"}</span></>
+                ) : (
+                  <span style={{ color: "var(--violet)" }}>{usdAmount ? fmtUSD(usdAmount) : "—"}</span>
+                )}
               </div>
-            )}
+              {(service === "combo" || (isElo && ((lpSurcharge > 1) || (rolOn && eloRoles.length > 0) || champOn || express))) && (
+                <div className="nop-mini" style={{ marginTop: 6 }}>
+                  {[
+                    service === "combo" && "coaching en vivo +50%",
+                    isElo && lpSurcharge > 1 && "+10% LP",
+                    isElo && rolOn && eloRoles.length > 0 && "+30% rol",
+                    isElo && champOn && "+50% campeón",
+                    isElo && express && "+20% express",
+                  ].filter(Boolean).join(" · ")}
+                </div>
+              )}
+            </>}
           </div>
-          <button className="nop-btn nop-btn-gold" disabled={eloInvalid} onClick={() => setStep(2)}>Siguiente: pago <ArrowRight size={15} /></button>
+          <button className="nop-btn nop-btn-gold" disabled={stepInvalid} onClick={() => setStep(2)}>Siguiente: pago <ArrowRight size={15} /></button>
         </div>
       </>}
 
@@ -2522,15 +2734,19 @@ function PromoForm({ onClose, onSaved, flash }) {
 function AdminAccounts({ accounts, reload, flash }) {
   const [summoner, setSummoner] = useState("");
   const [rk, setRk] = useState("Oro"), [rd, setRd] = useState("IV");
+  const [server, setServer] = useState("LAS");
   const [user, setUser] = useState(""), [pass, setPass] = useState("");
   const [estado, setEstado] = useState("activa");
   const [edit, setEdit] = useState(null);
 
-  const rankStr = (r, d) => r + (r !== "Master" ? " " + d : "");
+  const ACCOUNT_RANKS = ["Unranked", ...RANKS];
+  const SERVERS = ["LAS", "LAN", "NA", "BR", "EUW", "EUNE", "KR", "OCE"];
+  const isUnranked = rk === "Unranked";
+  const rankStr = (r, d) => r === "Unranked" ? "Unranked" : r + (r !== "Master" ? " " + d : "");
   const create = async () => {
     if (!summoner) { flash("Falta el nombre de invocador."); return; }
-    const { error } = await supabase.from("game_accounts").insert({ summoner, rank: rankStr(rk, rd), login_user: user, login_pass: pass, status: estado });
-    if (error) { flash("No se pudo crear la cuenta."); return; }
+    const { error } = await supabase.from("game_accounts").insert({ summoner, rank: rankStr(rk, rd), server, login_user: user, login_pass: pass, status: estado });
+    if (error) { flash("No se pudo crear la cuenta: " + error.message); return; }
     setSummoner(""); setUser(""); setPass(""); setEstado("activa");
     await reload(); flash("Cuenta creada");
   };
@@ -2547,27 +2763,31 @@ function AdminAccounts({ accounts, reload, flash }) {
           <input className="nop-input" value={summoner} onChange={(e) => setSummoner(e.target.value)} placeholder="Ej: SmurfNation01" /></div>
         <div className="nop-field" style={{ marginBottom: 12 }}><label>Liga actual</label>
           <div className="nop-row2">
-            <select className="nop-select" value={rk} onChange={(e) => setRk(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
-            <select className="nop-select" value={rd} onChange={(e) => setRd(e.target.value)} disabled={rk === "Master"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select>
+            <select className="nop-select" value={rk} onChange={(e) => setRk(e.target.value)}>{ACCOUNT_RANKS.map((r) => <option key={r}>{r}</option>)}</select>
+            <select className="nop-select" value={rd} onChange={(e) => setRd(e.target.value)} disabled={rk === "Master" || isUnranked}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select>
           </div></div>
-        <div className="nop-field" style={{ marginBottom: 12 }}><label>Estado</label>
-          <select className="nop-select" value={estado} onChange={(e) => setEstado(e.target.value)}><option value="activa">Disponible</option><option value="deshabilitada">Deshabilitada</option></select></div>
+        <div className="nop-field" style={{ marginBottom: 12 }}><label>Servidor</label>
+          <select className="nop-select" value={server} onChange={(e) => setServer(e.target.value)}>{SERVERS.map((s) => <option key={s}>{s}</option>)}</select></div>
       </div>
       <div className="nop-row3">
         <div className="nop-field" style={{ marginBottom: 0 }}><label>Usuario (oculto)</label>
           <input className="nop-input" value={user} onChange={(e) => setUser(e.target.value)} placeholder="usuario de login" /></div>
         <div className="nop-field" style={{ marginBottom: 0 }}><label>Contraseña (oculta)</label>
           <input className="nop-input" value={pass} onChange={(e) => setPass(e.target.value)} placeholder="contraseña" /></div>
-        <div style={{ display: "flex", alignItems: "flex-end" }}>
-          <button className="nop-btn nop-btn-cyan" style={{ width: "100%" }} onClick={create}><PlusIc size={15} />Crear cuenta</button></div>
+        <div className="nop-field" style={{ marginBottom: 0 }}><label>Estado</label>
+          <select className="nop-select" value={estado} onChange={(e) => setEstado(e.target.value)}><option value="activa">Disponible</option><option value="deshabilitada">Deshabilitada</option></select></div>
       </div>
+      <button className="nop-btn nop-btn-cyan" style={{ width: "100%", marginTop: 12 }} onClick={create}><PlusIc size={15} />Crear cuenta</button>
     </div>
 
     {accounts.length === 0 ? <Empty icon={Gamepad2} title="Sin cuentas todavía" sub="Creá la primera arriba." /> :
       <div className="nop-acc-grid">{accounts.map((a) => (
         <div className="nop-card nop-acc" key={a.id}>
           <div className="top">
-            <div><div className="sm">{a.summoner}</div><div className="nop-mini">{a.rank || "—"}</div></div>
+            <div>
+              <div className="sm">{a.summoner}</div>
+              <div className="nop-mini">{a.rank || "—"}{a.server ? ` · ${a.server}` : ""}</div>
+            </div>
             <AccStatusBadge s={a.status} />
           </div>
           {a.status === "inactiva" && <div className="nop-mini">En uso por <b style={{ color: "var(--tx)" }}>{a.taken_by_name || "—"}</b></div>}
@@ -2587,15 +2807,20 @@ function AdminAccounts({ accounts, reload, flash }) {
 }
 
 function AccountEdit({ a, onClose, reload, flash }) {
-  const init = (a.rank || "Oro IV").split(" ");
+  const ACCOUNT_RANKS = ["Unranked", ...RANKS];
+  const SERVERS = ["LAS", "LAN", "NA", "BR", "EUW", "EUNE", "KR", "OCE"];
+  const initRank = a.rank || "Oro IV";
+  const initIsUnranked = initRank.toLowerCase().startsWith("unranked");
+  const init = initRank.split(" ");
   const [summoner, setSummoner] = useState(a.summoner || "");
-  const [rk, setRk] = useState(RANKS.includes(init[0]) ? init[0] : "Oro");
+  const [rk, setRk] = useState(initIsUnranked ? "Unranked" : (RANKS.includes(init[0]) ? init[0] : "Oro"));
   const [rd, setRd] = useState(init[1] || "IV");
+  const [server, setServer] = useState(a.server || "LAS");
   const [user, setUser] = useState(a.login_user || "");
   const [pass, setPass] = useState(a.login_pass || "");
   const save = async () => {
-    const rank = rk + (rk !== "Master" ? " " + rd : "");
-    await supabase.from("game_accounts").update({ summoner, rank, login_user: user, login_pass: pass }).eq("id", a.id);
+    const rank = rk === "Unranked" ? "Unranked" : rk + (rk !== "Master" ? " " + rd : "");
+    await supabase.from("game_accounts").update({ summoner, rank, server, login_user: user, login_pass: pass }).eq("id", a.id);
     await reload(); flash("Cuenta actualizada"); onClose();
   };
   return <div className="nop-modal" onClick={onClose}><div className="nop-card nop-modalbox" style={{ maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
@@ -2603,8 +2828,10 @@ function AccountEdit({ a, onClose, reload, flash }) {
     <div className="bd">
       <div className="nop-field"><label>Nombre de invocador</label><input className="nop-input" value={summoner} onChange={(e) => setSummoner(e.target.value)} /></div>
       <div className="nop-field"><label>Liga actual</label><div className="nop-row2">
-        <select className="nop-select" value={rk} onChange={(e) => setRk(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
-        <select className="nop-select" value={rd} onChange={(e) => setRd(e.target.value)} disabled={rk === "Master"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select></div></div>
+        <select className="nop-select" value={rk} onChange={(e) => setRk(e.target.value)}>{ACCOUNT_RANKS.map((r) => <option key={r}>{r}</option>)}</select>
+        <select className="nop-select" value={rd} onChange={(e) => setRd(e.target.value)} disabled={rk === "Master" || rk === "Unranked"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select></div></div>
+      <div className="nop-field"><label>Servidor</label>
+        <select className="nop-select" value={server} onChange={(e) => setServer(e.target.value)}>{SERVERS.map((s) => <option key={s}>{s}</option>)}</select></div>
       <div className="nop-field"><label>Usuario</label><input className="nop-input" value={user} onChange={(e) => setUser(e.target.value)} /></div>
       <div className="nop-field"><label>Contraseña</label><input className="nop-input" value={pass} onChange={(e) => setPass(e.target.value)} /></div>
       <button className="nop-btn nop-btn-gold" style={{ width: "100%" }} onClick={save}><Check size={15} />Guardar cambios</button>
@@ -2635,7 +2862,7 @@ function BoosterAccounts({ profile, accounts, reload, flash }) {
       <div className="nop-panel-h" style={{ marginBottom: 12 }}><Gamepad2 size={15} style={{ color: "var(--violet)" }} />Mis cuentas en uso ({mias.length})</div>
       <div className="nop-acc-grid">{mias.map((a) => (
         <div className="nop-card nop-acc" key={a.id} style={{ borderColor: "var(--violet)" }}>
-          <div className="top"><div><div className="sm">{a.summoner}</div><div className="nop-mini">{a.rank || "—"}</div></div><AccStatusBadge s={a.status} /></div>
+          <div className="top"><div><div className="sm">{a.summoner}</div><div className="nop-mini">{a.rank || "—"}{a.server ? ` · ${a.server}` : ""}</div></div><AccStatusBadge s={a.status} /></div>
           <Cred label="Usuario" value={a.login_user} flash={flash} />
           <Cred label="Contraseña" value={a.login_pass} flash={flash} />
           <button className="nop-btn nop-btn-grn nop-btn-sm" onClick={() => ret(a)}><ArrowRight size={13} style={{ transform: "rotate(180deg)" }} />Devolver cuenta</button>
@@ -2646,7 +2873,7 @@ function BoosterAccounts({ profile, accounts, reload, flash }) {
     {disponibles.length === 0 ? <Empty icon={Gamepad2} title="No hay cuentas disponibles" sub="Cuando el admin cargue cuentas, aparecen acá." /> :
       <div className="nop-acc-grid">{disponibles.map((a) => (
         <div className="nop-card nop-acc" key={a.id}>
-          <div className="top"><div><div className="sm">{a.summoner}</div><div className="nop-mini">{a.rank || "—"}</div></div><AccStatusBadge s={a.status} /></div>
+          <div className="top"><div><div className="sm">{a.summoner}</div><div className="nop-mini">{a.rank || "—"}{a.server ? ` · ${a.server}` : ""}</div></div><AccStatusBadge s={a.status} /></div>
           <Cred label="Usuario" value={a.login_user} flash={flash} />
           <Cred label="Contraseña" value={a.login_pass} flash={flash} />
           <button className="nop-btn nop-btn-cyan nop-btn-sm" onClick={() => use(a)}><Check size={13} />Usar esta cuenta</button>
