@@ -18,6 +18,8 @@ const SERVICES = {
   coaching: { label: "Coaching", icon: GraduationCap, color: "#A855F7", desc: "Sesiones 1 a 1 con high elo: VOD review, pool de campeones, wave y macro." },
   combo: { label: "DuoBoost + Coaching", icon: Sparkles, color: "#E8B349", desc: "Subís de elo mientras el booster te hace coaching en vivo por Discord." },
   eloboost: { label: "Eloboost", icon: Shield, color: "#F87171", desc: "Un booster sube tu cuenta por vos en modo offline. Máximo 2 ligas por solicitud, por seguridad." },
+  single_match: { label: "Single Match", icon: Play, color: "#34D399", desc: "Pagás por partida o por pack. Ideal para mantener MMR o proteger contra decaimiento en Diamante+." },
+  placements: { label: "Placements", icon: Flag, color: "#FB923C", desc: "Jugamos tus 5 partidas de posicionamiento para asegurar el mejor inicio en la temporada." },
 };
 const DISCORD_INVITE = "https://discord.gg/VcCYYG9e24";
 const STATUS_FLOW = ["pending", "available", "in_progress", "completed"];
@@ -39,6 +41,18 @@ const PRICE_DIAMANTE_ARS = { IV: 12000, III: 14400, II: 18000, I: 18000 };
 const PRICE_DIAMANTE_USD = { IV: 12, III: 14.4, II: 18, I: 18 };
 const LANES = ["Top", "Jungla", "Mid", "ADC", "Support"];
 const COACHING_PRICE = { 1: 15000, 3: 35000, 5: 50000 };
+// Single Match: precios por cantidad de partidas (pack 4 pensado para proteccion decaimiento Diamante+)
+const SINGLE_MATCH_ARS = { 1: 4000, 4: 14400, 5: 18000, 10: 34000 };
+const SINGLE_MATCH_USD = { 1: 4, 4: 14.4, 5: 18, 10: 34 };
+const SINGLE_MATCH_OPTIONS = [
+  { games: 1, label: "1 partida", off: 0 },
+  { games: 4, label: "4 partidas (protección decaimiento)", off: 10 },
+  { games: 5, label: "5 partidas", off: 10 },
+  { games: 10, label: "10 partidas", off: 15 },
+];
+// Placements: 5 partidas de inicio de temporada, con opción SoloQ o DuoQ
+const PLACEMENTS_ARS = { soloq: 9900, duoq: 15000 };
+const PLACEMENTS_USD = { soloq: 10, duoq: 13 };
 function rankPos(r, d) { const i = RANKS.indexOf(r); return r === "Master" ? 32 : i * 4 + DIVS.indexOf(d); }
 
 // Precio de subir UNA sola división desde (rank, div). Retorna { ars, usd }.
@@ -2125,17 +2139,31 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
   const removePromo = () => { setPromo(null); setPromoInput(""); setPromoErr(""); };
   const isCoaching = service === "coaching";
   const isElo = service === "eloboost";
+  const isSingleMatch = service === "single_match";
+  const isPlacements = service === "placements";
+  const [placementMode, setPlacementMode] = useState("soloq");
   const curPos = rankPos(cur, curD);
-  const steps = rankPos(tgt, tgtD) - curPos;       // divisiones a subir (1 liga = 4)
-  const eloTooFar = isElo && steps > 8;            // máximo 2 ligas = 8 divisiones
+  const steps = rankPos(tgt, tgtD) - curPos;
+  // Regla eloboost: como máximo 2 ligas adelante, y si es la segunda liga siguiente, solo hasta IV.
+  const curRankIdx = RANKS.indexOf(cur);
+  const tgtRankIdx = RANKS.indexOf(tgt);
+  const maxTgtRankIdx = Math.min(RANKS.length - 1, curRankIdx + 2);
+  const eloTooFar = isElo && (
+    tgtRankIdx > curRankIdx + 2 ||
+    (tgtRankIdx === curRankIdx + 2 && tgt !== "Master" && tgtD !== "IV")
+  );
   // Ningún servicio con rango objetivo (elo/duoboost/combo) puede tener destino <= actual
-  const rankInvalid = !isCoaching && steps <= 0;
-  const eloInvalid = isElo && (steps <= 0 || steps > 8);
+  const rankInvalid = !isCoaching && !isSingleMatch && !isPlacements && steps <= 0;
+  const eloInvalid = isElo && (steps <= 0 || eloTooFar);
   const stepInvalid = rankInvalid || eloInvalid;
-  // límites de selección para eloboost (no más de 2 ligas)
-  const eloTgtRanks = RANKS.filter((r, i) => i >= RANKS.indexOf(cur) && i <= RANKS.indexOf(cur) + 2);
-  const eloTgtDivs = DIVS.filter((d) => { const s = rankPos(tgt, d) - curPos; return s > 0 && s <= 8; });
-  const lpSurcharge = lp === "+15" ? 1.1 : 1; // +15 LP = +10%
+  // límites de selección para eloboost
+  const eloTgtRanks = RANKS.filter((r, i) => i >= curRankIdx && i <= maxTgtRankIdx);
+  const eloTgtDivs = DIVS.filter((d) => {
+    if (rankPos(tgt, d) <= curPos) return false;
+    if (tgtRankIdx === maxTgtRankIdx && tgt !== "Master" && d !== "IV") return false;
+    return true;
+  });
+  const lpSurcharge = lp === "+15" ? 1.1 : 1;
 
   const priceBoth = useMemo(() => {
     let base;
@@ -2144,6 +2172,12 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
       const ars = COACHING_PRICE[games];
       const usd = blue ? Math.round((ars / blue) * 100) / 100 : null;
       base = { ars, usd };
+    } else if (isSingleMatch) {
+      // single match: precio fijo por cantidad de partidas
+      base = { ars: SINGLE_MATCH_ARS[games] || 0, usd: SINGLE_MATCH_USD[games] || 0 };
+    } else if (isPlacements) {
+      // placements: 5 partidas de inicio de temporada, precio segun modo (soloq/duoq)
+      base = { ars: PLACEMENTS_ARS[placementMode] || 0, usd: PLACEMENTS_USD[placementMode] || 0 };
     } else {
       // precio base (suma por división)
       let { ars, usd } = estimateBase(cur, curD, tgt, tgtD);
@@ -2181,7 +2215,7 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
       ars: Math.max(0, base.ars - discArs),
       usd: base.usd != null ? Math.max(0, base.usd - discUsd) : null,
     };
-  }, [service, cur, curD, tgt, tgtD, games, isCoaching, isElo, rolOn, eloRoles, champOn, express, lp, blue, promo]);
+  }, [service, cur, curD, tgt, tgtD, games, isCoaching, isElo, isSingleMatch, isPlacements, placementMode, rolOn, eloRoles, champOn, express, lp, blue, promo]);
   const price = priceBoth.ars;
   const usdAmount = priceBoth.usd;
   const SvcIc = ({ k }) => { const Ic = SERVICES[k].icon; return <Ic size={19} />; };
@@ -2219,12 +2253,17 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
         usdAmt = usdAmount;
         fxRate = blue || (await fetchBlue()); // guardamos el blue del momento como referencia, no lo usamos para calcular
       }
+      const noTgt = isCoaching || isSingleMatch || isPlacements;
       const row = {
         client_id: profile.id, client_name: profile.full_name, client_discord: profile.discord || profile.email,
         service, cur_rank: cur, cur_div: curD,
-        tgt_rank: isCoaching ? cur : tgt, tgt_div: isCoaching ? curD : tgtD,
-        server, lp: isCoaching ? null : lp, games: isCoaching ? games : null,
-        role_champ: isCoaching ? `${roleChamp || "Sin preferencia"} · ${games} partida${games > 1 ? "s" : ""}` : isElo ? eloDetail : roleChamp,
+        tgt_rank: noTgt ? cur : tgt, tgt_div: noTgt ? curD : tgtD,
+        server, lp: (isCoaching || isSingleMatch || isPlacements) ? null : lp,
+        games: (isCoaching || isSingleMatch) ? games : isPlacements ? 5 : null,
+        role_champ: isCoaching ? `${roleChamp || "Sin preferencia"} · ${games} partida${games > 1 ? "s" : ""}`
+          : isSingleMatch ? `${games} partida${games > 1 ? "s" : ""}${roleChamp ? " · " + roleChamp : ""}`
+          : isPlacements ? `Placements ${placementMode.toUpperCase()} · 5 partidas${roleChamp ? " · " + roleChamp : ""}`
+          : isElo ? eloDetail : roleChamp,
         notes, payment: currency === "ars" ? "Transferencia (pesos)" : "PayPal (USD)", price, status: "pending",
         receipt_path: path,
         pref_days: isElo ? null : days.join(", "), pref_times: isElo ? null : times.join(", "),
@@ -2261,32 +2300,82 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
             <div className="ic" style={{ background: SERVICES[k].color + "1f", color: SERVICES[k].color }}><SvcIc k={k} /></div>
             <h4>{SERVICES[k].label}</h4><p>{SERVICES[k].desc}</p></button>))}</div>
 
-        <label style={{ fontSize: 12, fontWeight: 600, color: "var(--mut)", display: "block", margin: "6px 0 12px" }}>2 · {isCoaching ? "Tu nivel y cuántas partidas" : "Liga actual y objetivo"}</label>
-        {!isCoaching ? <div className="nop-row2" style={{ marginBottom: 4 }}>
+        <label style={{ fontSize: 12, fontWeight: 600, color: "var(--mut)", display: "block", margin: "6px 0 12px" }}>2 · {isCoaching ? "Tu nivel y cuántas partidas" : isSingleMatch ? "Tu liga y cantidad de partidas" : isPlacements ? "Tu liga y modalidad" : "Liga actual y objetivo"}</label>
+        {!isCoaching && !isSingleMatch && !isPlacements ? <div className="nop-row2" style={{ marginBottom: 4 }}>
           <div className="nop-field" style={{ marginBottom: 8 }}><label>Liga actual <span className="req">*</span></label><div className="nop-row2">
             <select className="nop-select" value={cur} onChange={(e) => setCur(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
             <select className="nop-select" value={curD} onChange={(e) => setCurD(e.target.value)} disabled={cur === "Master"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select></div></div>
           <div className="nop-field" style={{ marginBottom: 8 }}><label>Liga objetivo <span className="req">*</span></label><div className="nop-row2">
             <select className="nop-select" value={tgt} onChange={(e) => setTgt(e.target.value)}>{(isElo ? eloTgtRanks : RANKS).map((r) => <option key={r}>{r}</option>)}</select>
             <select className="nop-select" value={tgtD} onChange={(e) => setTgtD(e.target.value)} disabled={tgt === "Master"}>{(isElo ? (eloTgtDivs.length ? eloTgtDivs : ["IV"]) : DIVS).map((d) => <option key={d}>{d}</option>)}</select></div></div>
-        </div> : <div className="nop-row2">
+        </div> : isCoaching ? <div className="nop-row2">
           <div className="nop-field"><label>Tu liga actual</label><div className="nop-row2">
             <select className="nop-select" value={cur} onChange={(e) => setCur(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
             <select className="nop-select" value={curD} onChange={(e) => setCurD(e.target.value)} disabled={cur === "Master"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select></div></div>
           <div className="nop-field"><label>Cantidad de partidas</label>
             <select className="nop-select" value={games} onChange={(e) => setGames(parseInt(e.target.value))}><option value={1}>1 partida</option><option value={3}>3 partidas</option><option value={5}>5 partidas</option></select></div>
-        </div>}
-        {!isCoaching && <div className={"nop-" + (stepInvalid ? "err" : "ok")} style={{ marginTop: 4 }}>
-          {eloTooFar ? "🔒 Por seguridad subimos como máximo 2 ligas por solicitud (ej: Hierro → Plata). Reducí la liga objetivo."
+        </div> : <>
+          {/* Single Match */}
+          <div className="nop-row2">
+            <div className="nop-field"><label>Tu liga actual <span className="req">*</span></label><div className="nop-row2">
+              <select className="nop-select" value={cur} onChange={(e) => setCur(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
+              <select className="nop-select" value={curD} onChange={(e) => setCurD(e.target.value)} disabled={cur === "Master"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select></div></div>
+            <div className="nop-field"><label>Elegí paquete <span className="req">*</span></label>
+              <select className="nop-select" value={games} onChange={(e) => setGames(parseInt(e.target.value))}>
+                {SINGLE_MATCH_OPTIONS.map((o) => (
+                  <option key={o.games} value={o.games}>{o.label} — {fmtARS(SINGLE_MATCH_ARS[o.games])}{o.off > 0 ? ` (${o.off}% off)` : ""}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="nop-card" style={{ padding: 12, background: "rgba(52,211,153,.08)", border: "1px solid rgba(52,211,153,.3)", marginTop: 6, marginBottom: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--grn)", marginBottom: 6 }}>✅ Winrate garantizado del 70%</div>
+            <div className="nop-mini" style={{ lineHeight: 1.5 }}>
+              Jugamos partidas clasificatorias en tu cuenta para que subas MMR sin jugarlas vos.
+              Podés comprar 1 partida suelta o packs con descuento.
+            </div>
+          </div>
+          {(cur === "Diamante" || cur === "Master") && (
+            <div className="nop-card" style={{ padding: 12, background: "rgba(56,189,248,.08)", border: "1px solid rgba(56,189,248,.3)", marginBottom: 10 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--cyan)", marginBottom: 6 }}>🛡️ Protección contra decaimiento (Diamante+)</div>
+              <div className="nop-mini" style={{ lineHeight: 1.5 }}>
+                En Diamante+ perdés LP por inactividad. Jugamos partidas clasificatorias en tu cuenta para mantener tu <b>contador de protección</b> al máximo, sin que tengas que jugar vos.<br /><br />
+                <b>Recomendado:</b> pack de 4 partidas por mes (~28 días de protección).<br />
+                <b>¿Cómo funciona?</b> Contratás el paquete, coordinamos horario y jugamos en tu cuenta. Podés revisar los días de protección en <b>Perfil &gt; Clasificatoria</b>. Cuando se te acabe o quieras renovar, nos avisás.
+              </div>
+            </div>
+          )}
+        </>}
+        {isPlacements && <>
+          <div className="nop-row2">
+            <div className="nop-field"><label>Tu liga actual <span className="req">*</span></label><div className="nop-row2">
+              <select className="nop-select" value={cur} onChange={(e) => setCur(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
+              <select className="nop-select" value={curD} onChange={(e) => setCurD(e.target.value)} disabled={cur === "Master"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select></div></div>
+            <div className="nop-field"><label>Modalidad <span className="req">*</span></label>
+              <div className="nop-segwrap" style={{ marginBottom: 0 }}>
+                <button type="button" className={"nop-seg" + (placementMode === "soloq" ? " on" : "")} onClick={() => setPlacementMode("soloq")}>SoloQ · {fmtARS(PLACEMENTS_ARS.soloq)}</button>
+                <button type="button" className={"nop-seg" + (placementMode === "duoq" ? " on" : "")} onClick={() => setPlacementMode("duoq")}>DuoQ · {fmtARS(PLACEMENTS_ARS.duoq)}</button>
+              </div>
+            </div>
+          </div>
+          <div className="nop-card" style={{ padding: 12, background: "rgba(251,146,60,.08)", border: "1px solid rgba(251,146,60,.3)", marginTop: 6, marginBottom: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--amber)", marginBottom: 6 }}>🏁 5 partidas de posicionamiento — inicio de temporada</div>
+            <div className="nop-mini" style={{ lineHeight: 1.5 }}>
+              Jugamos tus 5 partidas de placements para asegurar el mejor arranque de temporada. Elegí <b>SoloQ</b> (jugamos por vos en tu cuenta) o <b>DuoQ</b> (te acompañamos en dúo).
+            </div>
+          </div>
+        </>}
+        {!isCoaching && !isSingleMatch && !isPlacements && <div className={"nop-" + (stepInvalid ? "err" : "ok")} style={{ marginTop: 4 }}>
+          {eloTooFar ? "🔒 En Eloboost subimos como máximo 2 ligas y sólo hasta la división IV de la segunda liga (ej: Hierro IV → Plata IV, no Plata III). Ajustá el objetivo."
             : rankInvalid ? "La liga objetivo tiene que ser más alta que la actual. No podés pedir bajar de división."
-              : isElo ? "✅ Recorrido válido. Por seguridad solo subimos hasta 2 ligas por solicitud."
+              : isElo ? "✅ Recorrido válido."
                 : "✅ Recorrido válido."}
         </div>}
 
         <label style={{ fontSize: 12, fontWeight: 600, color: "var(--mut)", display: "block", margin: "10px 0 12px" }}>3 · Detalles</label>
         <div className="nop-row2">
           <div className="nop-field"><label>Servidor <span className="req">*</span></label><select className="nop-select" value={server} onChange={(e) => setServer(e.target.value)}><option>LAS</option><option>LAN</option><option>BR</option></select></div>
-          {!isCoaching && !isElo && <div className="nop-field"><label>Ganancia LP aprox</label><select className="nop-select" value={lp} onChange={(e) => setLp(e.target.value)}><option>+15</option><option>+20</option><option>+25</option></select></div>}
+          {!isCoaching && !isElo && !isSingleMatch && !isPlacements && <div className="nop-field"><label>Ganancia LP aprox</label><select className="nop-select" value={lp} onChange={(e) => setLp(e.target.value)}><option>+15</option><option>+20</option><option>+25</option></select></div>}
         </div>
 
         {isElo ? <>
