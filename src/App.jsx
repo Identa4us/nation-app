@@ -914,11 +914,15 @@ function AdminDash({ orders, profiles, reload, flash, notify }) {
   }, [orders]);
   const inMonth = (d) => month === "all" || monthKey(d) === month;
 
-  // métricas históricas: por mes de cierre / creación
+  // Facturación empieza al VALIDAR el pedido: available + in_progress + completed cuentan.
+  // Para el mes, usamos la fecha de creación (o completed_at si lo tiene).
+  const isBilled = (o) => o.status === "available" || o.status === "in_progress" || o.status === "completed";
+  const billed = orders.filter((o) => isBilled(o) && inMonth(o.completed_at || o.created_at));
   const completed = orders.filter((o) => o.status === "completed" && inMonth(o.completed_at || o.created_at));
   const scopedAll = orders.filter((o) => inMonth(o.completed_at || o.created_at));
-  const facturacion = completed.reduce((a, o) => a + Number(o.price), 0);
-  const ganancia = completed.reduce((a, o) => a + Number(o.profit || 0), 0);
+  // Facturación = suma de ganancias netas (precio - pago booster). Si no tiene booster asignado aún, la ganancia = precio.
+  const facturacion = billed.reduce((a, o) => a + (Number(o.price) - Number(o.booster_pay || 0)), 0);
+  const ganancia = facturacion; // mismo valor: ganancia neta acumulada
   const ratings = completed.filter((o) => o.survey_rating).map((o) => o.survey_rating);
   const avg = ratings.length ? ratings.reduce((a, b) => a + b, 0) / ratings.length : 0;
   const byService = Object.keys(SERVICES).map((k) => ({ name: SERVICES[k].label, value: scopedAll.filter((o) => o.service === k).length, color: SERVICES[k].color }));
@@ -969,8 +973,8 @@ function AdminDash({ orders, profiles, reload, flash, notify }) {
       </select>
     </div>
     <div className="nop-grid-kpi" style={{ marginBottom: 14 }}>
-      {kpi("Facturación", fmtARS(facturacion), Wallet, "var(--gold)", periodo)}
-      {kpi("Ganancia neta", fmtARS(ganancia), TrendingUp, "var(--grn)", "después de pagar boosters")}
+      {kpi("Facturación (ganancia neta)", fmtARS(facturacion), Wallet, "var(--gold)", periodo + " · validados en adelante")}
+      {kpi("Servicios facturados", billed.length, TrendingUp, "var(--grn)", `${completed.length} cerrados`)}
       {kpi("Servicios cerrados", completed.length, Trophy, "var(--cyan)", periodo)}
       {kpi("Servicios activos", liveActive.length, Zap, capacity.color, boosters.length > 0 ? capacity.label : "Cargá boosters para ver capacidad")}
     </div>
@@ -1121,14 +1125,21 @@ function NewOrderModal({ profiles, reload, flash, notify, onClose }) {
   const [currency, setCurrency] = useState("ars");
   const [assign, setAssign] = useState("");                // booster_id
   const [payment, setPayment] = useState("Transferencia (pesos)");
+  const [placementMode, setPlacementMode] = useState("soloq");
+  const [protectDec, setProtectDec] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const isCoach = service === "coaching";
   const isElo = service === "eloboost";
+  const isSingleMatch = service === "single_match";
+  const isPlacements = service === "placements";
+  const noTgt = isCoach || isSingleMatch || isPlacements;
   const priceAuto = useMemo(() => {
     if (isCoach) return COACHING_PRICE[games];
+    if (isSingleMatch) return protectDec && PROTECT_ELIGIBLE_RANKS.includes(cur) ? SINGLE_MATCH_PROTECT_ARS : singleMatchPrice(cur, games).ars;
+    if (isPlacements) return PLACEMENTS_ARS[placementMode] || 0;
     return estimateBase(cur, curD, tgt, tgtD).ars;
-  }, [service, cur, curD, tgt, tgtD, games, isCoach]);
+  }, [service, cur, curD, tgt, tgtD, games, isCoach, isSingleMatch, isPlacements, placementMode, protectDec]);
   const finalPrice = priceManual ? Number(priceManual) : priceAuto;
 
   const shareWhatsApp = (orderId, clientName, booster) => {
@@ -1164,10 +1175,13 @@ function NewOrderModal({ profiles, reload, flash, notify, onClose }) {
     const row = {
       client_id: cliId, client_name: cliName, client_discord: cliDiscord,
       service, cur_rank: cur, cur_div: curD,
-      tgt_rank: isCoach ? cur : tgt, tgt_div: isCoach ? curD : tgtD,
-      server, lp: isCoach ? null : "0-30",
-      games: isCoach ? games : null,
-      role_champ: isCoach ? `Sin preferencia · ${games} partida${games > 1 ? "s" : ""}` : "",
+      tgt_rank: noTgt ? cur : tgt, tgt_div: noTgt ? curD : tgtD,
+      server, lp: noTgt ? null : "0-30",
+      games: isCoach ? games : isSingleMatch ? (protectDec ? 4 : games) : isPlacements ? 5 : null,
+      role_champ: isCoach ? `Sin preferencia · ${games} partida${games > 1 ? "s" : ""}`
+        : isSingleMatch ? (protectDec ? "Pack protección decaimiento · 4 partidas" : `${games} partida${games > 1 ? "s" : ""}`)
+        : isPlacements ? `Placements ${placementMode.toUpperCase()} · 5 partidas`
+        : "",
       notes: notes || "Pedido creado por admin (sin comprobante).",
       payment, price: finalPrice, status,
       receipt_path: null,
@@ -1215,32 +1229,30 @@ function NewOrderModal({ profiles, reload, flash, notify, onClose }) {
 
       {/* Servicio */}
       <div className="nop-field"><label>Servicio <span className="req">*</span></label>
-        <div className="nop-segwrap" style={{ marginBottom: 0, gridTemplateColumns: "repeat(4,1fr)" }}>
-          {["eloboost", "duoboost", "combo", "coaching"].map((k) => (
+        <div className="nop-segwrap" style={{ marginBottom: 0, gridTemplateColumns: "repeat(3,1fr)" }}>
+          {["eloboost", "duoboost", "combo", "coaching", "single_match", "placements"].map((k) => (
             <button key={k} type="button" className={"nop-seg" + (service === k ? " on" : "")} onClick={() => setService(k)}>{SERVICES[k].label}</button>
           ))}
         </div>
       </div>
 
-      {/* Rangos o coaching */}
-      {!isCoach ? (
-        <>
-          <div className="nop-row2">
-            <div className="nop-field"><label>Rango actual</label>
-              <div style={{ display: "flex", gap: 6 }}>
-                <select className="nop-select" value={cur} onChange={(e) => setCur(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
-                {cur !== "Master" && <select className="nop-select" value={curD} onChange={(e) => setCurD(e.target.value)}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select>}
-              </div>
-            </div>
-            <div className="nop-field"><label>Rango objetivo</label>
-              <div style={{ display: "flex", gap: 6 }}>
-                <select className="nop-select" value={tgt} onChange={(e) => setTgt(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
-                {tgt !== "Master" && <select className="nop-select" value={tgtD} onChange={(e) => setTgtD(e.target.value)}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select>}
-              </div>
+      {/* Rangos / partidas / modalidad según servicio */}
+      {!noTgt ? (
+        <div className="nop-row2">
+          <div className="nop-field"><label>Rango actual</label>
+            <div style={{ display: "flex", gap: 6 }}>
+              <select className="nop-select" value={cur} onChange={(e) => setCur(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
+              {cur !== "Master" && <select className="nop-select" value={curD} onChange={(e) => setCurD(e.target.value)}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select>}
             </div>
           </div>
-        </>
-      ) : (
+          <div className="nop-field"><label>Rango objetivo</label>
+            <div style={{ display: "flex", gap: 6 }}>
+              <select className="nop-select" value={tgt} onChange={(e) => setTgt(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
+              {tgt !== "Master" && <select className="nop-select" value={tgtD} onChange={(e) => setTgtD(e.target.value)}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select>}
+            </div>
+          </div>
+        </div>
+      ) : isCoach ? (
         <div className="nop-row2">
           <div className="nop-field"><label>Rango actual</label>
             <div style={{ display: "flex", gap: 6 }}>
@@ -1254,7 +1266,37 @@ function NewOrderModal({ profiles, reload, flash, notify, onClose }) {
             </select>
           </div>
         </div>
-      )}
+      ) : isSingleMatch ? (
+        <>
+          <div className="nop-row2">
+            <div className="nop-field"><label>Rango actual</label>
+              <div style={{ display: "flex", gap: 6 }}>
+                <select className="nop-select" value={cur} onChange={(e) => setCur(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
+                {cur !== "Master" && <select className="nop-select" value={curD} onChange={(e) => setCurD(e.target.value)}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select>}
+              </div>
+            </div>
+            <div className="nop-field"><label>Paquete</label>
+              <select className="nop-select" value={games} onChange={(e) => setGames(Number(e.target.value))} disabled={protectDec}>
+                {SINGLE_MATCH_OPTIONS.map((o) => <option key={o.games} value={o.games}>{o.label}</option>)}
+              </select>
+            </div>
+          </div>
+          {PROTECT_ELIGIBLE_RANKS.includes(cur) && (
+            <div className="nop-field">
+              <label style={{ display: "flex", alignItems: "center", gap: 9, cursor: "pointer" }}>
+                <input type="checkbox" checked={protectDec} onChange={(e) => setProtectDec(e.target.checked)} /> 🛡️ Protección de decaimiento (4 partidas · $14.400)
+              </label>
+            </div>
+          )}
+        </>
+      ) : isPlacements ? (
+        <div className="nop-field"><label>Modalidad</label>
+          <div className="nop-segwrap" style={{ marginBottom: 0 }}>
+            <button type="button" className={"nop-seg" + (placementMode === "soloq" ? " on" : "")} onClick={() => setPlacementMode("soloq")}>SoloQ</button>
+            <button type="button" className={"nop-seg" + (placementMode === "duoq" ? " on" : "")} onClick={() => setPlacementMode("duoq")}>DuoQ</button>
+          </div>
+        </div>
+      ) : null}
 
       <div className="nop-row2">
         <div className="nop-field"><label>Servidor</label>
@@ -1395,7 +1437,7 @@ function BulkImportModal({ profiles, reload, flash, onClose }) {
   const [names, setNames] = useState([]); // [{raw, norm}]
   const boosters = profiles.filter((p) => p.role === "booster");
   const norm = (s) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
-  const svcMap = { duoboost: "duoboost", coaching: "coaching", combo: "combo", eloboost: "eloboost", "duoboost+coaching": "combo" };
+  const svcMap = { duoboost: "duoboost", coaching: "coaching", combo: "combo", eloboost: "eloboost", "duoboost+coaching": "combo", single_match: "single_match", singlematch: "single_match", "single match": "single_match", placements: "placements", posicionamiento: "placements" };
   const parseRank = (s) => {
     const parts = (s || "").trim().split(/\s+/);
     const rank = RANKS.find((r) => r.toLowerCase() === (parts[0] || "").toLowerCase()) || parts[0] || "";
@@ -1715,14 +1757,16 @@ function AdminFinance({ orders, profiles, flash }) {
   const pct = Number(paypalPct || 0) / 100;
   const tarjetaRate = Number(tarjeta) || (blue ? Math.round(blue * 1.6) : 0);
 
+  const isBilled = (o) => o.status === "available" || o.status === "in_progress" || o.status === "completed";
+  const billed = orders.filter(isBilled);
   const completed = orders.filter((o) => o.status === "completed");
   const months = useMemo(() => {
-    const s = new Set([thisMonth]); completed.forEach((o) => { const k = mKey(o.completed_at || o.created_at); if (k) s.add(k); });
+    const s = new Set([thisMonth]); billed.forEach((o) => { const k = mKey(o.completed_at || o.created_at); if (k) s.add(k); });
     conversions.forEach((c) => { if (c.month) s.add(c.month); });
     return Array.from(s).sort().reverse();
   }, [orders, conversions]);
   const inMonth = (o) => mKey(o.completed_at || o.created_at) === month;
-  const monthDone = completed.filter(inMonth);
+  const monthDone = billed.filter(inMonth);
 
   // --- INGRESOS ---
   const arsOrders = monthDone.filter((o) => (o.currency || "ars") === "ars");
@@ -1749,7 +1793,7 @@ function AdminFinance({ orders, profiles, flash }) {
   const pctSum = partners.reduce((a, p) => a + Number(p.pct || 0), 0);
 
   // --- CUENTAS (histórico) ---
-  const allDone = completed;
+  const allDone = billed;
   const convArsIn = conversions.reduce((a, c) => a + Number(c.ars_in || 0), 0);
   const convUsdOut = conversions.reduce((a, c) => a + Number(c.usd_out || 0), 0);
   const adjArs = adjustments.filter((a) => (a.currency || "ars") === "ars").reduce((s, a) => s + Number(a.amount || 0), 0);
