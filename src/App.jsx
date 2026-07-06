@@ -65,7 +65,7 @@ const SINGLE_MATCH_OPTIONS = [
 // Pack 4 partidas (protección contra decaimiento) — precio fijo, solo disponible de Oro para arriba
 const SINGLE_MATCH_PROTECT_ARS = 14400;
 const SINGLE_MATCH_PROTECT_USD = 14.4;
-const PROTECT_ELIGIBLE_RANKS = ["Oro", "Platino", "Esmeralda", "Diamante", "Master"];
+const PROTECT_ELIGIBLE_RANKS = ["Diamante", "Master"];
 // Placements: 5 partidas de inicio de temporada, con opción SoloQ o DuoQ
 const PLACEMENTS_ARS = { soloq: 9900, duoq: 15000 };
 const PLACEMENTS_USD = { soloq: 10, duoq: 13 };
@@ -765,12 +765,14 @@ function AdminValidate({ orders, profiles, reload, flash, notify }) {
     const baseCut = cuts.length ? Math.min(...cuts) : 0.5;
     const pay = Math.round(Number(o.price) * baseCut);
     return [
-      "🔔 *NUEVA CUENTA DISPONIBLE* — Eloboost Nation", "",
+      "🔥 *NUEVO SERVICIO DISPONIBLE* 🔥",
+      "🏆 Eloboost Nation", "",
       `🎮 *Servicio:* ${SERVICES[o.service].label}`,
       `📈 *Rango:* ${rankText(o)}`,
       `🌎 *Servidor:* ${o.server || "-"}`,
-      `💰 *Pago:* desde ${fmtARS(pay)}`, "",
-      "👉 Entrá a la app y tomalo antes que otro:", link,
+      `💰 *Tu pago:* ${fmtARS(pay)}`, "",
+      "⚡ *Entrá a la app y tomalo antes que otro:*",
+      `🔗 ${link}`,
     ].join("\n");
   };
   const shareWhatsApp = (o) => {
@@ -1098,27 +1100,57 @@ function AdminDash({ orders, profiles, reload, flash, notify }) {
 }
 function AdminOrders({ orders, profiles, reload, flash, deleteOrder, notify }) {
   const [f, setF] = useState("todos");
+  const [fServer, setFServer] = useState("todos");
+  const [fService, setFService] = useState("todos");
+  const [fBooster, setFBooster] = useState("todos");
   const [q, setQ] = useState("");
   const [showImport, setShowImport] = useState(false);
   const [showReports, setShowReports] = useState(false);
   const [showNew, setShowNew] = useState(false);
-  let list = orders;
+  const boosters = (profiles || []).filter((p) => p.role === "booster");
+  // Prioridad: in_progress → available → pending → completed → cancelled
+  const statusPrio = { in_progress: 0, available: 1, pending: 2, completed: 3, cancelled: 4 };
+  let list = orders.slice().sort((a, b) => {
+    const pa = statusPrio[a.status] ?? 9, pb = statusPrio[b.status] ?? 9;
+    if (pa !== pb) return pa - pb;
+    return new Date(b.created_at) - new Date(a.created_at);
+  });
   if (f !== "todos") list = list.filter((o) => o.status === f);
+  if (fServer !== "todos") list = list.filter((o) => o.server === fServer);
+  if (fService !== "todos") list = list.filter((o) => o.service === fService);
+  if (fBooster !== "todos") list = list.filter((o) => (fBooster === "unassigned" ? !o.booster_id : o.booster_id === fBooster));
   if (q) list = list.filter((o) => (o.client_name + (o.client_discord || "") + o.id).toLowerCase().includes(q.toLowerCase()));
   return <>
-    <div className="nop-sectionhead"><div><h1 className="nop-h1">Pedidos</h1><p className="nop-sub">Todos los servicios, en cualquier estado.</p></div>
+    <div className="nop-sectionhead"><div><h1 className="nop-h1">Pedidos</h1><p className="nop-sub">Todos los servicios, en cualquier estado. Se muestran primero los activos y disponibles.</p></div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <button className="nop-btn nop-btn-gold nop-btn-sm" onClick={() => setShowNew(true)}><Plus size={14} />Nuevo pedido</button>
         <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setShowReports(true)}><FileText size={14} />Reportes</button>
         <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setShowImport(true)}><Upload size={14} />Carga masiva</button>
       </div></div>
-    <div className="nop-card nop-panel" style={{ marginBottom: 14, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-      <div style={{ position: "relative", flex: 1, minWidth: 200 }}>
-        <Search size={15} style={{ position: "absolute", left: 12, top: 12, color: "var(--mut2)" }} />
-        <input className="nop-input" style={{ paddingLeft: 36 }} placeholder="Buscar cliente o #ID" value={q} onChange={(e) => setQ(e.target.value)} />
+    <div className="nop-card nop-panel" style={{ marginBottom: 14 }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <div style={{ position: "relative", flex: 1, minWidth: 200 }}>
+          <Search size={15} style={{ position: "absolute", left: 12, top: 12, color: "var(--mut2)" }} />
+          <input className="nop-input" style={{ paddingLeft: 36 }} placeholder="Buscar cliente o #ID" value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
+        <select className="nop-select" style={{ width: "auto", minWidth: 130 }} value={f} onChange={(e) => setF(e.target.value)}>
+          <option value="todos">Estado: Todos</option>
+          {STATUS_FLOW.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
+        </select>
+        <select className="nop-select" style={{ width: "auto", minWidth: 130 }} value={fService} onChange={(e) => setFService(e.target.value)}>
+          <option value="todos">Servicio: Todos</option>
+          {Object.keys(SERVICES).map((k) => <option key={k} value={k}>{SERVICES[k].label}</option>)}
+        </select>
+        <select className="nop-select" style={{ width: "auto", minWidth: 120 }} value={fServer} onChange={(e) => setFServer(e.target.value)}>
+          <option value="todos">Servidor: Todos</option>
+          <option value="LAS">LAS</option><option value="LAN">LAN</option><option value="NA">NA</option><option value="BR">BR</option>
+        </select>
+        <select className="nop-select" style={{ width: "auto", minWidth: 140 }} value={fBooster} onChange={(e) => setFBooster(e.target.value)}>
+          <option value="todos">Booster: Todos</option>
+          <option value="unassigned">Sin asignar</option>
+          {boosters.map((b) => <option key={b.id} value={b.id}>{b.full_name || b.email}</option>)}
+        </select>
       </div>
-      <div className="nop-pillrow">{["todos", ...STATUS_FLOW].map((s) => (
-        <button key={s} className={"nop-btn nop-btn-sm " + (f === s ? "nop-btn-gold" : "nop-btn-ghost")} onClick={() => setF(s)}>{s === "todos" ? "Todos" : STATUS_LABEL[s]}</button>))}</div>
     </div>
     <div className="nop-card nop-panel">
       {list.length === 0 ? <Empty icon={Hash} title="Sin resultados" sub="Probá con otro filtro." />
@@ -1166,14 +1198,18 @@ function NewOrderModal({ profiles, reload, flash, notify, onClose }) {
 
   const shareWhatsApp = (orderId, clientName, booster) => {
     const link = window.location.origin;
+    const rangoTxt = isCoach || isSingleMatch || isPlacements ? `${cur}${cur !== "Master" ? " " + curD : ""}` : `${cur} ${curD} → ${tgt} ${tgt !== "Master" ? tgtD : ""}`;
     const msg = [
-      "🎯 *NUEVO TRABAJO ASIGNADO* — Eloboost Nation", "",
+      booster ? "🎯 *TRABAJO ASIGNADO* 🎯" : "🔥 *NUEVO SERVICIO DISPONIBLE* 🔥",
+      "🏆 Eloboost Nation", "",
       `👤 *Cliente:* ${clientName}`,
       `🎮 *Servicio:* ${SERVICES[service].label}`,
-      `📈 *Rango:* ${cur} ${curD}${isCoach ? "" : " → " + tgt + " " + tgtD}`,
+      `📈 *Rango:* ${rangoTxt}`,
       `🌎 *Servidor:* ${server}`,
-      booster ? `\n👉 Asignado a: ${booster.full_name}` : "",
-      "", `Entrá a la app: ${link}`,
+      booster ? `👉 *Asignado a:* ${booster.full_name}` : "",
+      "",
+      "⚡ *Entrá a la app:*",
+      `🔗 ${link}`,
     ].filter(Boolean).join("\n");
     window.open("https://wa.me/?text=" + encodeURIComponent(msg), "_blank");
   };
@@ -2325,7 +2361,11 @@ function ClientOrderCard({ o, reload, flash, notify }) {
       {o.status === "available" && <p className="nop-mini" style={{ textAlign: "center" }}>¡Validado! Buscando booster… avisamos a todo el equipo.</p>}
       {o.status === "in_progress" && <div className="nop-discordbox">
         <div className="ic"><MessageCircle size={19} /></div>
-        <div style={{ flex: 1 }}><b style={{ fontSize: 13 }}>Tu booster es {o.booster_name}</b><div className="nop-mini">Entrá al Discord y buscá <b style={{ color: "var(--tx)" }}>#pedido-{o.id}</b>.</div></div>
+        <div style={{ flex: 1 }}>
+          {o.service === "eloboost"
+            ? <><b style={{ fontSize: 13 }}>Un booster del equipo está trabajando en tu cuenta</b><div className="nop-mini">Cualquier consulta, contactanos por Discord en <b style={{ color: "var(--tx)" }}>#pedido-{o.id}</b>.</div></>
+            : <><b style={{ fontSize: 13 }}>Tu booster es {o.booster_name}</b><div className="nop-mini">Entrá al Discord y buscá <b style={{ color: "var(--tx)" }}>#pedido-{o.id}</b>.</div></>}
+        </div>
         <a className="nop-btn nop-btn-sm nop-btn-ghost" href={DISCORD_INVITE} target="_blank" rel="noreferrer">Abrir Discord</a></div>}
       {o.status === "in_progress" && ["eloboost", "duoboost", "combo"].includes(o.service) && (() => {
         const pct = progressPct(o);
@@ -2651,15 +2691,6 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
               </select>
             </div>
           </div>
-          {PROTECT_ELIGIBLE_RANKS.includes(cur) && (
-            <div className="nop-field" style={{ marginTop: 6 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 9, cursor: "pointer" }}>
-                <input type="checkbox" checked={protectDec} onChange={(e) => setProtectDec(e.target.checked)} />
-                🛡️ Protección de decaimiento — pack de 4 partidas
-              </label>
-              <p className="nop-mini" style={{ marginTop: 6 }}>Recomendado para Diamante+ (mantiene tu contador de protección al máximo, ~28 días). Reemplaza el pack elegido arriba.</p>
-            </div>
-          )}
           <div className="nop-card" style={{ padding: 12, background: "rgba(52,211,153,.08)", border: "1px solid rgba(52,211,153,.3)", marginTop: 6, marginBottom: 10 }}>
             <div style={{ fontSize: 13, fontWeight: 600, color: "var(--grn)", marginBottom: 6 }}>✅ Winrate garantizado del 70%</div>
             <div className="nop-mini" style={{ lineHeight: 1.5 }}>
@@ -2670,11 +2701,15 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
           {(cur === "Diamante" || cur === "Master") && (
             <div className="nop-card" style={{ padding: 12, background: "rgba(56,189,248,.08)", border: "1px solid rgba(56,189,248,.3)", marginBottom: 10 }}>
               <div style={{ fontSize: 13, fontWeight: 600, color: "var(--cyan)", marginBottom: 6 }}>🛡️ Protección contra decaimiento (Diamante+)</div>
-              <div className="nop-mini" style={{ lineHeight: 1.5 }}>
+              <div className="nop-mini" style={{ lineHeight: 1.5, marginBottom: 10 }}>
                 En Diamante+ perdés LP por inactividad. Jugamos partidas clasificatorias en tu cuenta para mantener tu <b>contador de protección</b> al máximo, sin que tengas que jugar vos.<br /><br />
                 <b>Recomendado:</b> pack de 4 partidas por mes (~28 días de protección).<br />
                 <b>¿Cómo funciona?</b> Contratás el paquete, coordinamos horario y jugamos en tu cuenta. Podés revisar los días de protección en <b>Perfil &gt; Clasificatoria</b>. Cuando se te acabe o quieras renovar, nos avisás.
               </div>
+              <label style={{ display: "flex", alignItems: "center", gap: 9, cursor: "pointer", padding: "10px 12px", background: "rgba(56,189,248,.08)", border: "1px solid rgba(56,189,248,.35)", borderRadius: 8 }}>
+                <input type="checkbox" checked={protectDec} onChange={(e) => setProtectDec(e.target.checked)} />
+                <span style={{ fontSize: 13, fontWeight: 600, color: "var(--cyan)" }}>Activar pack de 4 partidas (protección de decaimiento)</span>
+              </label>
             </div>
           )}
         </> : null}
@@ -3164,17 +3199,19 @@ function PromoForm({ onClose, onSaved, flash }) {
   </div></div>;
 }
 
-function AdminAccounts({ accounts, reload, flash }) {
+function AdminAccounts({ accounts, profiles, reload, flash }) {
   const [summoner, setSummoner] = useState("");
   const [rk, setRk] = useState("Oro"), [rd, setRd] = useState("IV");
   const [server, setServer] = useState("LAS");
   const [user, setUser] = useState(""), [pass, setPass] = useState("");
   const [estado, setEstado] = useState("activa");
   const [edit, setEdit] = useState(null);
+  const [assignFor, setAssignFor] = useState(null);
 
   const ACCOUNT_RANKS = ["Unranked", ...RANKS];
   const SERVERS = ["LAS", "LAN", "NA", "BR", "EUW", "EUNE", "KR", "OCE"];
   const isUnranked = rk === "Unranked";
+  const boosters = (profiles || []).filter((p) => p.role === "booster" && p.status === "active" && !isTestBooster(p));
   const rankStr = (r, d) => r === "Unranked" ? "Unranked" : r + (r !== "Master" ? " " + d : "");
   const create = async () => {
     if (!summoner) { flash("Falta el nombre de invocador."); return; }
@@ -3185,6 +3222,17 @@ function AdminAccounts({ accounts, reload, flash }) {
   };
   const setStatus = async (a, status) => { await supabase.from("game_accounts").update({ status }).eq("id", a.id); await reload(); flash(`Cuenta ${ACC_STATUS_LABEL[status]?.toLowerCase()}`); };
   const del = async (a) => { if (!window.confirm(`¿Eliminar la cuenta ${a.summoner}?`)) return; await supabase.from("game_accounts").delete().eq("id", a.id); await reload(); flash("Cuenta eliminada"); };
+  const assign = async (a, b) => {
+    const { error } = await supabase.from("game_accounts").update({ status: "inactiva", taken_by: b.id, taken_by_name: b.full_name }).eq("id", a.id);
+    if (error) { flash("No se pudo asignar: " + error.message); return; }
+    setAssignFor(null);
+    await reload(); flash(`Cuenta ${a.summoner} asignada a ${b.full_name}`);
+  };
+  const release = async (a) => {
+    if (!window.confirm(`¿Liberar la cuenta ${a.summoner}? Vuelve a disponibles.`)) return;
+    await supabase.from("game_accounts").update({ status: "activa", taken_by: null, taken_by_name: null }).eq("id", a.id);
+    await reload(); flash(`Cuenta ${a.summoner} liberada`);
+  };
 
   return <>
     <div className="nop-sectionhead"><div><h1 className="nop-h1">Cuentas</h1><p className="nop-sub">Pool de cuentas para los boosters. Crealas, actualizalas o deshabilitalas.</p></div></div>
@@ -3228,6 +3276,8 @@ function AdminAccounts({ accounts, reload, flash }) {
           <Cred label="Contraseña" value={a.login_pass} flash={flash} />
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setEdit(a)}>Editar</button>
+            {a.status === "activa" && <button className="nop-btn nop-btn-gold nop-btn-sm" onClick={() => setAssignFor(a)}><UserCheck size={13} />Asignar</button>}
+            {a.status === "inactiva" && <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => release(a)}>Liberar</button>}
             {a.status !== "deshabilitada"
               ? <button className="nop-btn nop-btn-ghost nop-btn-sm" disabled={a.status === "inactiva"} onClick={() => setStatus(a, "deshabilitada")}><Power size={13} />Deshabilitar</button>
               : <button className="nop-btn nop-btn-cyan nop-btn-sm" onClick={() => setStatus(a, "activa")}><Power size={13} />Activar</button>}
@@ -3236,6 +3286,22 @@ function AdminAccounts({ accounts, reload, flash }) {
         </div>))}</div>}
 
     {edit && <AccountEdit a={edit} onClose={() => setEdit(null)} reload={reload} flash={flash} />}
+    {assignFor && <div className="nop-modal" onClick={() => setAssignFor(null)}>
+      <div className="nop-card nop-modalbox" style={{ maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
+        <div className="hd"><h3>Asignar cuenta {assignFor.summoner}</h3><button className="nop-iconbtn" onClick={() => setAssignFor(null)}><X size={16} /></button></div>
+        <div className="bd">
+          <p className="nop-mini" style={{ marginBottom: 14 }}>{assignFor.rank || "—"}{assignFor.server ? ` · ${assignFor.server}` : ""}</p>
+          {boosters.length === 0 ? <div className="nop-mini" style={{ color: "var(--red)" }}>No hay boosters activos.</div> :
+            <div style={{ display: "grid", gap: 8 }}>{boosters.map((b) => {
+              const taken = accounts.filter((a) => a.taken_by === b.id).length;
+              return <button key={b.id} className="nop-card" style={{ padding: 12, display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", background: "var(--bg2)", border: "1px solid var(--line)", textAlign: "left" }} onClick={() => assign(assignFor, b)}>
+                <div><b style={{ fontSize: 14 }}>{b.full_name}</b><div className="nop-mini">{taken} cuentas asignadas</div></div>
+                <ArrowRight size={15} style={{ color: "var(--gold)" }} />
+              </button>;
+            })}</div>}
+        </div>
+      </div>
+    </div>}
   </>;
 }
 
