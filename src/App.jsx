@@ -71,6 +71,28 @@ const PLACEMENTS_ARS = { soloq: 9900, duoq: 15000 };
 const PLACEMENTS_USD = { soloq: 10, duoq: 13 };
 function rankPos(r, d) { const i = RANKS.indexOf(r); return r === "Master" ? 32 : i * 4 + DIVS.indexOf(d); }
 
+// URL de op.gg para el summoner. Server: LAS/LAN/NA/BR/EUW/EUNE/KR/OCE. Summoner: "Nombre#TAG" o "Nombre".
+function opggUrl(summoner, server) {
+  if (!summoner) return null;
+  const regionMap = { LAS: "las", LAN: "lan", NA: "na", BR: "br", EUW: "euw", EUNE: "eune", KR: "kr", OCE: "oce" };
+  const region = regionMap[server] || "las";
+  const s = String(summoner).trim();
+  const parts = s.split("#");
+  const gameName = encodeURIComponent(parts[0].trim());
+  const tag = parts[1] ? encodeURIComponent(parts[1].trim()) : region.toUpperCase();
+  return `https://op.gg/lol/summoners/${region}/${gameName}-${tag}`;
+}
+
+// % de progreso del servicio a partir del rango inicial, actual y objetivo.
+function progressPct(o) {
+  if (!o?.progress_rank) return null;
+  const from = rankPos(o.cur_rank, o.cur_div || "IV");
+  const to = rankPos(o.tgt_rank, o.tgt_div || "IV");
+  const now = rankPos(o.progress_rank, o.progress_div || "IV");
+  if (to <= from) return null;
+  return Math.max(0, Math.min(100, Math.round(((now - from) / (to - from)) * 100)));
+}
+
 // Precio de subir UNA sola división desde (rank, div). Retorna { ars, usd }.
 function priceOneDivision(rank, div) {
   if (rank === "Diamante") return { ars: PRICE_DIAMANTE_ARS[div] || 0, usd: PRICE_DIAMANTE_USD[div] || 0 };
@@ -1695,9 +1717,22 @@ function OrderModal({ o, onClose, onDelete, hideProfit }) {
       <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}><SvcTag s={o.service} /><StatusBadge s={o.status} /><ExtrasTags o={o} /></div>
       <F k="Usuario" v={o.client_name || "—"} />
       <F k="Discord" v={o.client_discord || "—"} />
-      {o.summoner && <F k="Invocador" v={o.summoner} />}
+      {o.summoner && <F k="Invocador" v={<span>{o.summoner}{opggUrl(o.summoner, o.server) && <> · <a href={opggUrl(o.summoner, o.server)} target="_blank" rel="noreferrer" style={{ color: "var(--cyan)" }}>ver en op.gg</a></>}</span>} />}
       <F k="Recorrido" v={<RankPath o={o} />} />
       <F k="Servidor / LP" v={`${o.server} · ${o.lp || "—"}`} />
+      {["eloboost", "duoboost", "combo"].includes(o.service) && o.status === "in_progress" && (() => {
+        const pct = progressPct(o);
+        const prLabel = o.progress_rank ? `${o.progress_rank}${o.progress_rank !== "Master" ? " " + (o.progress_div || "") : ""}` : "sin actualizar";
+        return <div className="nop-card" style={{ padding: 12, background: "var(--bg2)", margin: "8px 0" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, fontSize: 12 }}>
+            <span className="nop-mini">Progreso · actual: <b style={{ color: o.progress_rank ? "var(--gold)" : "var(--mut2)" }}>{prLabel}</b></span>
+            <b style={{ color: "var(--gold)" }}>{pct != null ? pct + "%" : "—"}</b>
+          </div>
+          <div style={{ height: 6, background: "var(--line)", borderRadius: 999, overflow: "hidden" }}>
+            <div style={{ height: "100%", width: (pct || 0) + "%", background: "linear-gradient(90deg, var(--gold), var(--amber))" }} />
+          </div>
+        </div>;
+      })()}
       {o.role_champ && cleanRoleDetail(o.role_champ) && <F k="Rol / detalle" v={cleanRoleDetail(o.role_champ)} />}
       {o.pref_days && <F k="Días de preferencia" v={o.pref_days} />}
       {o.pref_times && <F k="Horario de preferencia" v={o.pref_times} />}
@@ -2093,6 +2128,7 @@ function BoosterBoard({ profile, orders, reload, flash, notify }) {
 }
 function BoosterMine({ profile, orders, reload, flash, notify }) {
   const mine = orders.filter((o) => o.booster_id === profile.id && o.status === "in_progress");
+  const [progressFor, setProgressFor] = useState(null);
   const finish = async (o) => {
     await supabase.from("orders").update({ status: "completed", completed_at: new Date().toISOString() }).eq("id", o.id);
     await notify(`Servicio #${o.id} (${SERVICES[o.service].label}) finalizado por ${profile.full_name}.`, "admin", null, "done", "order", o.id);
@@ -2109,7 +2145,11 @@ function BoosterMine({ profile, orders, reload, flash, notify }) {
   return <>
     <div className="nop-sectionhead"><div><h1 className="nop-h1">Mis servicios</h1><p className="nop-sub">Lo que tenés en curso.</p></div></div>
     {mine.length === 0 ? <Empty icon={Swords} title="No tenés servicios activos" sub="Aceptá un trabajo desde la pestaña de disponibles." /> :
-      <div style={{ display: "grid", gap: 14 }}>{mine.map((o) => (
+      <div style={{ display: "grid", gap: 14 }}>{mine.map((o) => {
+        const hasProgressUI = ["eloboost", "duoboost", "combo"].includes(o.service);
+        const pct = progressPct(o);
+        const prLabel = o.progress_rank ? `${o.progress_rank}${o.progress_rank !== "Master" ? " " + (o.progress_div || "") : ""}` : null;
+        return (
         <div className="nop-card nop-panel" key={o.id}>
           <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 14 }}>
             <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}><b style={{ color: "var(--mut)" }}>#{o.id}</b><SvcTag s={o.service} /><StatusBadge s={o.status} /><RankPath o={o} /></div>
@@ -2120,6 +2160,23 @@ function BoosterMine({ profile, orders, reload, flash, notify }) {
             <div style={{ flex: 1 }}><b style={{ fontSize: 13 }}>Coordiná con {o.client_name} ({o.client_discord})</b><div className="nop-mini">{o.summoner ? <>Invocador: <b style={{ color: "var(--tx)" }}>{o.summoner}</b> · </> : ""}Sala sugerida: <b style={{ color: "var(--tx)" }}>#pedido-{o.id}</b></div></div>
             <a className="nop-btn nop-btn-sm nop-btn-ghost" href={DISCORD_INVITE} target="_blank" rel="noreferrer">Abrir Discord</a>
           </div>
+          {hasProgressUI && (
+            <div className="nop-card" style={{ padding: 14, background: "var(--bg2)", marginBottom: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+                <div className="nop-panel-h" style={{ margin: 0 }}><TrendingUp size={14} style={{ color: "var(--gold)" }} />Progreso del servicio {pct != null ? <b style={{ color: "var(--gold)", marginLeft: 8 }}>{pct}%</b> : null}</div>
+                <button className="nop-btn nop-btn-gold nop-btn-sm" onClick={() => setProgressFor(o)}><RefreshCw size={13} />Actualizar rango</button>
+              </div>
+              <div className="nop-mini" style={{ marginBottom: 8 }}>Actual: <b style={{ color: prLabel ? "var(--gold)" : "var(--mut2)" }}>{prLabel || "sin actualizar aún"}</b> · Objetivo: <b style={{ color: "var(--tx)" }}>{o.tgt_rank}{o.tgt_rank !== "Master" ? " " + (o.tgt_div || "") : ""}</b></div>
+              <div style={{ height: 8, background: "var(--line)", borderRadius: 999, overflow: "hidden" }}>
+                <div style={{ height: "100%", width: (pct || 0) + "%", background: "linear-gradient(90deg, var(--gold), var(--amber))", borderRadius: 999, transition: "width .4s" }} />
+              </div>
+              {o.summoner && opggUrl(o.summoner, o.server) && (
+                <a href={opggUrl(o.summoner, o.server)} target="_blank" rel="noreferrer" className="nop-btn nop-btn-ghost nop-btn-sm" style={{ marginTop: 10 }}>
+                  <Eye size={13} />Ver en op.gg
+                </a>
+              )}
+            </div>
+          )}
           {(o.pref_days || o.pref_times) && <div className="nop-mini" style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
             {o.pref_days && <span><CalendarDays size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />Días: {o.pref_days}</span>}
             {o.pref_times && <span><Clock size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />Horario: {o.pref_times}</span>}</div>}
@@ -2135,8 +2192,51 @@ function BoosterMine({ profile, orders, reload, flash, notify }) {
             <button className="nop-btn nop-btn-grn" onClick={() => finish(o)}><Flag size={15} />Marcar finalizado</button>
             <button className="nop-btn nop-btn-ghost" onClick={() => giveBack(o)}><ArrowRight size={15} style={{ transform: "rotate(180deg)" }} />Devolver servicio</button>
           </div>
-        </div>))}</div>}
+        </div>);
+      })}</div>}
+    {progressFor && <UpdateProgressModal order={progressFor} profile={profile} onClose={() => setProgressFor(null)} reload={reload} flash={flash} notify={notify} />}
   </>;
+}
+
+function UpdateProgressModal({ order, profile, onClose, reload, flash, notify }) {
+  const [rk, setRk] = useState(order.progress_rank || order.cur_rank || "Oro");
+  const [rd, setRd] = useState(order.progress_div || order.cur_div || "IV");
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    setBusy(true);
+    const { error } = await supabase.from("orders").update({
+      progress_rank: rk,
+      progress_div: rk === "Master" ? null : rd,
+      progress_updated_at: new Date().toISOString(),
+      progress_updated_by: profile.id,
+    }).eq("id", order.id);
+    setBusy(false);
+    if (error) { flash("No se pudo actualizar: " + error.message); return; }
+    // Notificar al cliente
+    if (order.client_id) {
+      const label = `${rk}${rk !== "Master" ? " " + rd : ""}`;
+      await notify(`Tu progreso se actualizó: ahora estás en ${label}.`, null, order.client_id, "done", "order", order.id);
+    }
+    await reload();
+    flash("Progreso actualizado");
+    onClose();
+  };
+  return <div className="nop-modal" onClick={onClose}><div className="nop-card nop-modalbox" style={{ maxWidth: 400 }} onClick={(e) => e.stopPropagation()}>
+    <div className="hd"><h3>Actualizar rango del cliente</h3><button className="nop-iconbtn" onClick={onClose}><X size={16} /></button></div>
+    <div className="bd">
+      <p className="nop-mini" style={{ marginBottom: 14 }}>Cliente <b style={{ color: "var(--tx)" }}>{order.client_name}</b> · Inicio: {order.cur_rank}{order.cur_rank !== "Master" ? " " + (order.cur_div || "") : ""} · Objetivo: {order.tgt_rank}{order.tgt_rank !== "Master" ? " " + (order.tgt_div || "") : ""}</p>
+      <div className="nop-field"><label>Liga actual del cliente</label>
+        <div className="nop-row2">
+          <select className="nop-select" value={rk} onChange={(e) => setRk(e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
+          <select className="nop-select" value={rd} onChange={(e) => setRd(e.target.value)} disabled={rk === "Master"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select>
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+        <button className="nop-btn nop-btn-ghost" style={{ flex: 1 }} onClick={onClose}>Cancelar</button>
+        <button className="nop-btn nop-btn-gold" style={{ flex: 1 }} disabled={busy} onClick={save}>{busy ? "Guardando…" : "Guardar"}<Check size={15} /></button>
+      </div>
+    </div>
+  </div></div>;
 }
 function BoosterHist({ profile, orders }) {
   const done = orders.filter((o) => o.booster_id === profile.id && o.status === "completed");
@@ -2227,6 +2327,30 @@ function ClientOrderCard({ o, reload, flash, notify }) {
         <div className="ic"><MessageCircle size={19} /></div>
         <div style={{ flex: 1 }}><b style={{ fontSize: 13 }}>Tu booster es {o.booster_name}</b><div className="nop-mini">Entrá al Discord y buscá <b style={{ color: "var(--tx)" }}>#pedido-{o.id}</b>.</div></div>
         <a className="nop-btn nop-btn-sm nop-btn-ghost" href={DISCORD_INVITE} target="_blank" rel="noreferrer">Abrir Discord</a></div>}
+      {o.status === "in_progress" && ["eloboost", "duoboost", "combo"].includes(o.service) && (() => {
+        const pct = progressPct(o);
+        const prLabel = o.progress_rank ? `${o.progress_rank}${o.progress_rank !== "Master" ? " " + (o.progress_div || "") : ""}` : `${o.cur_rank}${o.cur_rank !== "Master" ? " " + (o.cur_div || "") : ""}`;
+        const initLabel = `${o.cur_rank}${o.cur_rank !== "Master" ? " " + (o.cur_div || "") : ""}`;
+        const tgtLabel = `${o.tgt_rank}${o.tgt_rank !== "Master" ? " " + (o.tgt_div || "") : ""}`;
+        const displayPct = pct != null ? pct : 0;
+        return <div className="nop-card" style={{ padding: 16, marginTop: 12, background: "var(--bg2)" }}>
+          <div className="nop-panel-h" style={{ marginBottom: 12 }}><TrendingUp size={15} style={{ color: "var(--gold)" }} />Progreso del servicio</div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8, fontSize: 13 }}>
+            <span className="nop-mini">Inicio: <b style={{ color: "var(--tx)" }}>{initLabel}</b> · Actual: <b style={{ color: "var(--gold)" }}>{prLabel}</b> · Objetivo: <b style={{ color: "var(--tx)" }}>{tgtLabel}</b></span>
+            <b style={{ color: "var(--gold)", fontSize: 18 }}>{displayPct}%</b>
+          </div>
+          <div style={{ height: 10, background: "var(--line)", borderRadius: 999, overflow: "hidden" }}>
+            <div style={{ height: "100%", width: displayPct + "%", background: "linear-gradient(90deg, var(--gold), var(--amber))", borderRadius: 999, transition: "width .4s" }} />
+          </div>
+          {o.progress_updated_at && <div className="nop-mini" style={{ marginTop: 8 }}>Última actualización: {timeAgo(o.progress_updated_at)}</div>}
+          {!o.progress_rank && <div className="nop-mini" style={{ marginTop: 8, color: "var(--mut2)" }}>Tu booster va a actualizar el progreso a medida que avance.</div>}
+          {o.summoner && opggUrl(o.summoner, o.server) && (
+            <a href={opggUrl(o.summoner, o.server)} target="_blank" rel="noreferrer" className="nop-btn nop-btn-ghost nop-btn-sm" style={{ marginTop: 12, width: "100%" }}>
+              <Eye size={13} />Ver historial de partidas en op.gg
+            </a>
+          )}
+        </div>;
+      })()}
       {o.status === "in_progress" && o.service === "eloboost" && <div className="nop-card" style={{ padding: 14, marginTop: 12, background: "rgba(248,113,113,.08)", border: "1px solid rgba(248,113,113,.3)", display: "flex", gap: 10, alignItems: "flex-start" }}>
         <Shield size={18} style={{ color: "#f87171", flexShrink: 0, marginTop: 1 }} />
         <span style={{ fontSize: 12.5, color: "var(--mut)", lineHeight: 1.6 }}><b style={{ color: "#f87171" }}>Importante:</b> no ingreses a tu cuenta hasta que el servicio esté completado. Por seguridad (cambio de IP), si entrás mientras el booster trabaja, podés interrumpir el servicio o exponer la cuenta.</span>
