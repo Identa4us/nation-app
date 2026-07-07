@@ -24,7 +24,7 @@ const SERVICES = {
   single_match: { label: "Single Match", icon: Play, color: "#34D399", desc: "Pagás por partida o por pack. Ideal para mantener MMR o proteger contra decaimiento en Diamante+." },
   placements: { label: "Placements", icon: Flag, color: "#FB923C", desc: "Jugamos tus 5 partidas de posicionamiento para asegurar el mejor inicio en la temporada." },
 };
-const DISCORD_INVITE = "https://discord.gg/VcCYYG9e24";
+const DISCORD_INVITE = "https://discord.gg/AfmjdnbNgC";
 const STATUS_FLOW = ["pending", "available", "in_progress", "completed"];
 const STATUS_LABEL = { pending: "En revisión", available: "Disponible", in_progress: "En proceso", completed: "Finalizado", cancelled: "Cancelado" };
 
@@ -1614,8 +1614,11 @@ function AdminBoosters({ orders, profiles, reload, flash, deleteUser, editUserAu
   const completed = orders.filter((o) => o.status === "completed");
   const active = orders.filter((o) => o.status === "in_progress");
   const [editing, setEditing] = useState(null);
+  const [noting, setNoting] = useState(null);
   const setCut = async (p, cut) => { await supabase.from("profiles").update({ cut }).eq("id", p.id); await reload(); flash(`Corte de ${p.full_name} → ${Math.round(cut * 100)}%`); };
   const setStatus = async (p, status) => { await supabase.from("profiles").update({ status }).eq("id", p.id); await reload(); flash(`${p.full_name}: ${status}`); };
+  const statusLabel = (s) => s === "active" ? "Habilitado" : s === "interrupted" ? "Interrumpido" : s === "disabled" ? "Deshabilitado" : s === "pending" ? "Pendiente" : s;
+  const statusColor = (s) => s === "active" ? "s-completed" : s === "interrupted" ? "s-pending" : s === "pending" ? "s-pending" : "s-cancelled";
 
   return <>
     <div className="nop-sectionhead"><div><h1 className="nop-h1">Boosters</h1><p className="nop-sub">Equipo, cortes, estado y desempeño. Las altas se aprueban desde Validaciones.</p></div></div>
@@ -1628,7 +1631,14 @@ function AdminBoosters({ orders, profiles, reload, flash, deleteUser, editUserAu
         const avg = rs.length ? (rs.reduce((a, c) => a + c, 0) / rs.length).toFixed(1) : "—";
         return <tr key={b.id}>
           <td><div style={{ display: "flex", alignItems: "center", gap: 9 }}><span className="nop-avatar" style={{ background: "var(--cyan)" }}>{(b.full_name || "?")[0]}</span><div><b>{b.full_name || "—"}</b><div className="nop-mini">{b.email}</div></div></div></td>
-          <td><span className={"nop-status s-" + (b.status === "active" ? "completed" : b.status === "pending" ? "pending" : "cancelled")}>{b.status}</span></td>
+          <td>
+            <select className="nop-select" style={{ width: 130, padding: "6px 8px", fontSize: 12, borderColor: b.status === "active" ? "var(--grn)" : b.status === "interrupted" ? "var(--amber)" : b.status === "disabled" ? "var(--red)" : "var(--line)" }} value={b.status || "pending"} onChange={(e) => setStatus(b, e.target.value)}>
+              <option value="active">✅ Habilitado</option>
+              <option value="interrupted">⚠️ Interrumpido</option>
+              <option value="disabled">🚫 Deshabilitado</option>
+              {b.status === "pending" && <option value="pending">Pendiente</option>}
+            </select>
+          </td>
           <td><select className="nop-select" style={{ width: 84, padding: "6px 8px" }} value={b.cut} onChange={(e) => setCut(b, parseFloat(e.target.value))}>{[0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7].map((c) => <option key={c} value={c}>{Math.round(c * 100)}%</option>)}</select></td>
           <td>{active.filter((o) => o.booster_id === b.id).length}</td>
           <td>{done.length}</td>
@@ -1637,16 +1647,47 @@ function AdminBoosters({ orders, profiles, reload, flash, deleteUser, editUserAu
           <td>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
               {editUserAuth && <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setEditing(b)} title="Editar email/contraseña"><Settings size={13} />Editar</button>}
-              {b.status === "active"
-                ? <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setStatus(b, "disabled")}>Deshabilitar</button>
-                : <button className="nop-btn nop-btn-cyan nop-btn-sm" onClick={() => setStatus(b, "active")}>Habilitar</button>}
+              <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setNoting(b)} title="Notas del admin (privadas)" style={{ position: "relative" }}>
+                <FileText size={13} />Nota
+                {b.admin_note && <span style={{ position: "absolute", top: -4, right: -4, width: 8, height: 8, borderRadius: 999, background: "var(--gold)" }} />}
+              </button>
               {deleteUser && <button className="nop-btn nop-btn-danger nop-btn-sm" onClick={() => deleteUser(b)} title="Eliminar booster"><Trash2 size={13} /></button>}
             </div>
           </td>
         </tr>; })}</tbody>
     </table></div></div>
     {editing && <EditAuthModal user={editing} onClose={() => setEditing(null)} onSave={editUserAuth} />}
+    {noting && <AdminNoteModal user={noting} onClose={() => setNoting(null)} reload={reload} flash={flash} />}
   </>;
+}
+
+function AdminNoteModal({ user, onClose, reload, flash }) {
+  const [note, setNote] = useState(user.admin_note || "");
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    setBusy(true);
+    const { error } = await supabase.from("profiles").update({
+      admin_note: note.trim() || null,
+      admin_note_updated_at: note.trim() ? new Date().toISOString() : null,
+    }).eq("id", user.id);
+    setBusy(false);
+    if (error) { flash("No se pudo guardar: " + error.message); return; }
+    await reload();
+    flash(note.trim() ? "Nota actualizada" : "Nota borrada");
+    onClose();
+  };
+  return <div className="nop-modal" onClick={onClose}><div className="nop-card nop-modalbox" style={{ maxWidth: 500 }} onClick={(e) => e.stopPropagation()}>
+    <div className="hd"><h3>Nota interna — {user.full_name}</h3><button className="nop-iconbtn" onClick={onClose}><X size={16} /></button></div>
+    <div className="bd">
+      <p className="nop-mini" style={{ marginBottom: 12 }}>Solo la ven los admins. El booster nunca ve esta nota.</p>
+      {user.admin_note_updated_at && <p className="nop-mini" style={{ marginBottom: 12, color: "var(--mut2)" }}>Última actualización: {new Date(user.admin_note_updated_at).toLocaleString("es-AR")}</p>}
+      <textarea className="nop-ta" rows={6} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Ej: Le debemos $X del mes pasado. Reincidente en devolver pedidos." />
+      <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+        <button className="nop-btn nop-btn-ghost" style={{ flex: 1 }} onClick={onClose}>Cancelar</button>
+        <button className="nop-btn nop-btn-gold" style={{ flex: 1 }} disabled={busy} onClick={save}>{busy ? "Guardando…" : "Guardar nota"}<Check size={15} /></button>
+      </div>
+    </div>
+  </div></div>;
 }
 
 function EditAuthModal({ user, onClose, onSave }) {
@@ -2447,10 +2488,10 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
     if (!code) { setPromoErr("Ingresá un código."); return; }
     setPromoBusy(true);
     try {
-      const { data, error } = await supabase.rpc("validate_promo_code", { p_code: code });
+      const { data, error } = await supabase.rpc("validate_promo_code", { p_code: code, p_client_id: profile?.id || null });
       if (error) throw error;
       const row = Array.isArray(data) ? data[0] : data;
-      if (!row) { setPromo(null); setPromoErr("Ese código no existe, venció o está desactivado."); }
+      if (!row) { setPromo(null); setPromoErr("Ese código no existe, venció, ya lo usaste o está desactivado."); }
       else { setPromo(row); setPromoErr(""); flash(`Código ${row.code} aplicado`); }
     } catch (e) {
       setPromoErr("No se pudo validar el código. Reintentá.");
@@ -2600,6 +2641,7 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
   }, [service, cur, curD, tgt, tgtD, server, lp, games, roleChamp, notes, days, times, eloRoles, rolOn, champOn, champName, express, step]);
 
   const submit = async () => {
+    if (busy) return;                                // prevenir doble click
     if (!file) { flash("Subí el comprobante de pago para continuar."); return; }
     if (!isElo && !summoner.trim()) { flash("Ingresá tu nombre de invocador."); return; }
     if (isElo && (!acctUser || !acctPass)) { flash("Ingresá el usuario y la contraseña de la cuenta."); return; }
@@ -2611,11 +2653,10 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
       const up = await supabase.storage.from("comprobantes").upload(path, file, { upsert: false });
       if (up.error) throw up.error;
       const eloDetail = isElo ? `${rolOn && eloRoles.length ? "Rol: " + eloRoles.join("/") : "Sin rol fijo"}${champOn && champName ? ` · Campeón: ${champName}` : ""}${express ? " · ⚡ Express" : ""} · LP ${lp}` : "";
-      // USD nativo desde la tabla del sistema; fx_rate = blue solo como referencia (informativa)
       let fxRate = null, usdAmt = null;
       if (currency === "usd") {
         usdAmt = usdAmount;
-        fxRate = blue || (await fetchBlue()); // guardamos el blue del momento como referencia, no lo usamos para calcular
+        fxRate = blue || (await fetchBlue());
       }
       const noTgt = isCoaching || isSingleMatch || isPlacements;
       const row = {
@@ -2641,10 +2682,14 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
       };
       const { data: created, error } = await supabase.from("orders").insert(row).select("id").single();
       if (error) throw error;
-      // incrementar contador del promo (fire and forget, no bloquea si falla)
-      if (promo?.id) { supabase.rpc("increment_promo_usage", { p_code_id: promo.id }).then(() => {}, () => {}); }
+      // incrementar contador del promo — fire and forget, envuelto en función async para que NADA pueda romperlo
+      if (promo?.id) {
+        (async () => {
+          try { await supabase.rpc("increment_promo_usage", { p_code_id: promo.id }); } catch (e) { console.warn("promo increment failed", e); }
+        })();
+      }
       try { localStorage.removeItem(DRAFT_KEY); } catch (e) {}
-      await notify(`Nuevo pedido de ${profile.full_name} — ${SERVICES[service].label} — entró por validar (con comprobante).`, "admin", null, "new", "order", created?.id);
+      try { await notify(`Nuevo pedido de ${profile.full_name} — ${SERVICES[service].label} — entró por validar (con comprobante).`, "admin", null, "new", "order", created?.id); } catch (e) {}
       await reload(); flash("¡Pedido enviado! Validamos el comprobante y pasa a los boosters."); setTab("home");
     } catch (e) {
       console.error("Error al enviar pedido:", e);
@@ -3050,7 +3095,7 @@ function AdminPromos({ flash }) {
             <tr key={r.id}>
               <td><b style={{ fontFamily: "ui-monospace,monospace", fontSize: 13 }}>{r.code}</b></td>
               <td>{fmtDiscount(r)}</td>
-              <td className="nop-mini">{fmtMode(r)}</td>
+              <td className="nop-mini">{fmtMode(r)}{r.once_per_client ? " · 1 x cliente" : ""}</td>
               <td>{isInactive(r)
                 ? <span className="nop-status s-cancelled">{inactiveReason(r)}</span>
                 : <span className="nop-status s-completed">Activo</span>}</td>
@@ -3081,6 +3126,7 @@ function PromoForm({ onClose, onSaved, flash }) {
   const [validFrom, setValidFrom] = useState("");
   const [validUntil, setValidUntil] = useState("");
   const [notes, setNotes] = useState("");
+  const [oncePerClient, setOncePerClient] = useState(false);
   const [busy, setBusy] = useState(false);
 
   // Generar código aleatorio de 8 caracteres, sin caracteres confundibles (0/O, 1/I, etc.)
@@ -3114,6 +3160,7 @@ function PromoForm({ onClose, onSaved, flash }) {
       expires_at: mode === "date_range" && validUntil ? validUntil : null,
       usage_limit: mode === "single_use" ? 1 : null,
       notes: notes.trim() || null,
+      once_per_client: oncePerClient,
       active: true,
     };
     const { error } = await supabase.from("promo_codes").insert(row);
@@ -3187,6 +3234,16 @@ function PromoForm({ onClose, onSaved, flash }) {
           </div>
         </div>
       )}
+
+      <div className="nop-field">
+        <label style={{ display: "flex", alignItems: "center", gap: 9, cursor: "pointer", padding: "10px 12px", border: "1px solid " + (oncePerClient ? "var(--gold)" : "var(--line)"), borderRadius: 10, background: oncePerClient ? "rgba(232,179,73,.08)" : "var(--bg2)" }}>
+          <input type="checkbox" checked={oncePerClient} onChange={(e) => setOncePerClient(e.target.checked)} />
+          <div>
+            <b style={{ fontSize: 13 }}>Un solo uso por cliente</b>
+            <div className="nop-mini">Cada cliente puede usar este código una vez. Se combina con los demás modos (por ej. ilimitado + 1 por cliente).</div>
+          </div>
+        </label>
+      </div>
 
       <div className="nop-field"><label>Notas (solo para vos)</label>
         <input className="nop-input" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Ej: Campaña Instagram junio" /></div>
