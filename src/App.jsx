@@ -372,7 +372,13 @@ export default function App() {
     setLastSeen(t);
     try { localStorage.setItem(seenKey, String(t)); } catch (e) {}
   };
-  const unread = notifs.filter((n) => new Date(n.created_at).getTime() > lastSeen).length;
+  const visibleNotifs = notifs.filter((n) => {
+    if (profile.role === "admin") return true;
+    if (n.recipient_id && n.recipient_id === profile.id) return true;
+    if (n.recipient_role && n.recipient_role === profile.role) return true;
+    return false;
+  });
+  const unread = visibleNotifs.filter((n) => new Date(n.created_at).getTime() > lastSeen).length;
 
   const openDrawer = () => { setDrawer(true); };
   const closeDrawer = () => { setDrawer(false); markSeen(); };
@@ -416,7 +422,7 @@ export default function App() {
         {profile.role === "cliente" && <ClientViews tab={tab} setTab={setTab} {...ctx} />}
       </div></div>
 
-      {drawer && <Drawer notifs={notifs} lastSeen={lastSeen} onClose={closeDrawer} onClick={handleNotif} onMarkAll={markSeen} />}
+      {drawer && <Drawer notifs={visibleNotifs} lastSeen={lastSeen} onClose={closeDrawer} onClick={handleNotif} onMarkAll={markSeen} />}
       {showProfile && <ProfileModal profile={profile} onClose={() => setShowProfile(false)} flash={flash} />}
       {focusOrder && <OrderModal o={focusOrder} onClose={() => setFocusOrder(null)} onDelete={profile.role === "admin" ? deleteOrder : null} />}
       {toast && <div className="nop-toast"><Check size={16} style={{ color: "var(--grn)" }} />{toast}</div>}
@@ -1517,25 +1523,44 @@ function BulkImportModal({ profiles, reload, flash, onClose }) {
         const parsed = parseCSV(String(r.result).replace(/^\uFEFF/, ""));
         const head = parsed[0].map((h) => h.trim().toLowerCase());
         const idx = (name) => head.indexOf(name);
-        const need = ["tipo_servicio", "liga_inicial", "liga_objetivo", "fecha", "pago_booster", "booster"];
+        const need = ["tipo_servicio", "liga_inicial", "fecha", "pago_booster", "booster"];
         const missing = need.filter((n) => idx(n) < 0);
         if (missing.length) { setErrors(["Faltan columnas: " + missing.join(", ")]); setRows(null); return; }
+        const hasTgt = idx("liga_objetivo") >= 0;
+        const hasModal = idx("modalidad") >= 0;
+        const hasPart = idx("partidas") >= 0;
         const errs = []; const out = []; const nameSet = {};
         parsed.slice(1).forEach((r2, n) => {
           const svcRaw = (r2[idx("tipo_servicio")] || "").trim().toLowerCase().replace(/\s+/g, "");
           const service = svcMap[svcRaw];
           const [cr, cd] = parseRank(r2[idx("liga_inicial")]);
-          const [tr, td] = parseRank(r2[idx("liga_objetivo")]);
+          // servicios sin liga objetivo: coaching, placements, single_match
+          const noTgt = service === "coaching" || service === "placements" || service === "single_match";
+          let tr = cr, td = cd;
+          if (!noTgt) {
+            const tgtRaw = hasTgt ? r2[idx("liga_objetivo")] : "";
+            if (!tgtRaw || !tgtRaw.trim()) {
+              errs.push(`Fila ${n + 2}: falta liga_objetivo para ${service}`);
+              return;
+            }
+            [tr, td] = parseRank(tgtRaw);
+          }
           const fecha = parseDate(r2[idx("fecha")]);
           const pago = Number((r2[idx("pago_booster")] || "").replace(/[^\d.-]/g, ""));
           const bname = (r2[idx("booster")] || "").trim();
+          const modalidad = hasModal ? (r2[idx("modalidad")] || "").trim().toLowerCase() : "";
+          const partidas = hasPart ? Number((r2[idx("partidas")] || "").replace(/[^\d]/g, "")) : 0;
           if (!service) { errs.push(`Fila ${n + 2}: servicio inválido "${svcRaw}"`); return; }
           if (!fecha) { errs.push(`Fila ${n + 2}: fecha inválida`); return; }
           if (!pago) { errs.push(`Fila ${n + 2}: pago_booster inválido`); return; }
           const nb = norm(bname); if (bname) nameSet[nb] = bname;
-          out.push({ service, cur_rank: cr, cur_div: cd, tgt_rank: tr, tgt_div: td, price: pago, fecha, bnorm: nb, bname });
+          // Detalles según servicio
+          let games = null, role_champ = "Carga histórica";
+          if (service === "coaching") { games = partidas || 3; role_champ = `Coaching histórico · ${games} partida${games > 1 ? "s" : ""}`; }
+          if (service === "single_match") { games = partidas || 1; role_champ = `Single Match · ${games} partida${games > 1 ? "s" : ""}`; }
+          if (service === "placements") { games = 5; const m = modalidad === "duoq" ? "DUOQ" : "SOLOQ"; role_champ = `Placements ${m} · 5 partidas`; }
+          out.push({ service, cur_rank: cr, cur_div: cd, tgt_rank: tr, tgt_div: td, price: pago, fecha, bnorm: nb, bname, games, role_champ });
         });
-        // auto-mapeo por nombre normalizado
         const distinct = Object.entries(nameSet).map(([nb, raw]) => ({ norm: nb, raw }));
         const initMap = {};
         distinct.forEach((d) => { const b = boosters.find((x) => norm(x.full_name) === d.norm); initMap[d.norm] = b?.id || ""; });
@@ -1553,7 +1578,7 @@ function BulkImportModal({ profiles, reload, flash, onClose }) {
       return {
         client_id: null, client_name: "Histórico", client_discord: null,
         service: o.service, cur_rank: o.cur_rank, cur_div: o.cur_div, tgt_rank: o.tgt_rank, tgt_div: o.tgt_div, server: "LAS",
-        role_champ: "Carga histórica", price: o.price, booster_pay: o.price, profit: 0,
+        role_champ: o.role_champ, games: o.games, price: o.price, booster_pay: o.price, profit: 0,
         status: "completed", completed_at: o.fecha, accepted_at: o.fecha,
         booster_id: bId, booster_name: b?.full_name || o.bname || "—",
         booster_paid: true, booster_paid_ccy: "ars", currency: "ars",
@@ -1561,7 +1586,7 @@ function BulkImportModal({ profiles, reload, flash, onClose }) {
     });
     const { error } = await supabase.from("orders").insert(clean);
     setBusy(false);
-    if (error) { flash("No se pudo importar. Revisá el archivo."); return; }
+    if (error) { flash("No se pudo importar: " + error.message); return; }
     await reload(); flash(`Se importaron ${clean.length} servicios.`); onClose();
   };
   const wipeHistoric = async () => {
@@ -1576,7 +1601,7 @@ function BulkImportModal({ profiles, reload, flash, onClose }) {
   return <div className="nop-modal" onClick={onClose}><div className="nop-card nop-modalbox" onClick={(e) => e.stopPropagation()}>
     <div className="hd"><h3>Carga masiva de servicios</h3><button className="nop-iconbtn" onClick={onClose}><X size={16} /></button></div>
     <div className="bd">
-      <p className="nop-mini" style={{ marginBottom: 12 }}>CSV con columnas: <b>tipo_servicio, liga_inicial, liga_objetivo, fecha, pago_booster, booster</b>. Ligas "Oro IV". Fecha AAAA-MM-DD o DD/MM/AAAA. Se cargan como finalizados y pagados, con cliente "Histórico".</p>
+      <p className="nop-mini" style={{ marginBottom: 12 }}>Columnas obligatorias: <b>tipo_servicio, liga_inicial, fecha, pago_booster, booster</b>. Opcionales: <b>liga_objetivo</b> (necesaria para eloboost/duoboost/combo), <b>modalidad</b> (para placements: soloq/duoq), <b>partidas</b> (para coaching/single_match). Servicios válidos: eloboost, duoboost, combo, coaching, single_match, placements. Ligas "Oro IV". Fecha AAAA-MM-DD o DD/MM/AAAA. Se cargan como finalizados y pagados, con cliente "Histórico".</p>
       <label className="nop-upload" style={{ marginBottom: 14 }}>
         <input type="file" accept=".csv,text/csv" onChange={onFile} style={{ display: "none" }} />
         <Upload size={18} /><span>Elegir archivo CSV</span>
