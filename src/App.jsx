@@ -975,7 +975,10 @@ function AdminDash({ orders, profiles, reload, flash, notify }) {
         : { color: "var(--red)", label: `Saturado · ${ratio.toFixed(1)}/booster` };
 
   const assignBooster = async (order, booster) => {
-    const pay = Math.round(Number(order.price) * Number(booster.cut || 0.5));
+    // El pago del booster se calcula sobre el precio ORIGINAL (antes del descuento del promo).
+    // El descuento se descuenta de la ganancia, no del pago del booster.
+    const originalPrice = Number(order.price) + Number(order.discount_ars || 0);
+    const pay = Math.round(originalPrice * Number(booster.cut || 0.5));
     const { error } = await supabase.from("orders")
       .update({ status: "in_progress", booster_id: booster.id, booster_name: booster.full_name, booster_pay: pay, profit: Number(order.price) - pay, accepted_at: new Date().toISOString() })
       .eq("id", order.id).eq("status", "available");
@@ -2190,7 +2193,10 @@ function BoosterViews({ tab, ...ctx }) {
 function BoosterBoard({ profile, orders, reload, flash, notify }) {
   const open = orders.filter((o) => o.status === "available");
   const accept = async (o) => {
-    const pay = Math.round(Number(o.price) * Number(profile.cut));
+    // El pago del booster se calcula sobre el precio ORIGINAL (antes del descuento del promo).
+    // El descuento se descuenta de la ganancia, no del pago del booster.
+    const originalPrice = Number(o.price) + Number(o.discount_ars || 0);
+    const pay = Math.round(originalPrice * Number(profile.cut));
     const { data, error } = await supabase.from("orders")
       .update({ status: "in_progress", booster_id: profile.id, booster_name: profile.full_name, booster_pay: pay, profit: Number(o.price) - pay, accepted_at: new Date().toISOString() })
       .eq("id", o.id).eq("status", "available").select();
