@@ -17,13 +17,18 @@ const isTestBooster = (p) => p && TEST_BOOSTER_NAMES.some((n) => (p.full_name ||
 const DIVS = ["IV", "III", "II", "I"];
 const RANK_COLOR = { Hierro: "#7B8497", Bronce: "#B07B3E", Plata: "#A8B3C7", Oro: "#E8B349", Platino: "#2DD4BF", Esmeralda: "#10B981", Diamante: "#38BDF8", Master: "#A855F7" };
 const SERVICES = {
-  duoboost: { label: "DuoBoost", icon: Swords, color: "#38BDF8", desc: "Subís en dúo con un booster Grandmaster+. Jugás en tu cuenta, 0% riesgo de baneo." },
-  coaching: { label: "Coaching", icon: GraduationCap, color: "#A855F7", desc: "Sesiones 1 a 1 con high elo: VOD review, pool de campeones, wave y macro." },
-  tft: { label: "TFT", icon: Sparkles, color: "#E8B349", desc: "Teamfight Tactics: subimos tu rango de TFT. Opción de coaching para que aprendas a rankear vos." },
   eloboost: { label: "Eloboost", icon: Shield, color: "#F87171", desc: "Un booster sube tu cuenta por vos en modo offline. Máximo 2 ligas por solicitud, por seguridad." },
+  duoboost: { label: "DuoBoost", icon: Swords, color: "#38BDF8", desc: "Subís en dúo con un booster Grandmaster+. Jugás en tu cuenta, 0% riesgo de baneo. Opción de coaching." },
+  coaching: { label: "Coaching", icon: GraduationCap, color: "#A855F7", desc: "Sesiones 1 a 1 con high elo: VOD review, pool de campeones, wave y macro." },
   single_match: { label: "Single Match", icon: Play, color: "#34D399", desc: "Pagás por partida o por pack. Ideal para mantener MMR o proteger contra decaimiento en Diamante+." },
   placements: { label: "Placements", icon: Flag, color: "#FB923C", desc: "Jugamos tus 5 partidas de posicionamiento para asegurar el mejor inicio en la temporada." },
+  tft: { label: "TFT", icon: Sparkles, color: "#E8B349", desc: "Teamfight Tactics: subimos tu rango de TFT. Opción de coaching para que aprendas a rankear vos." },
 };
+// Servicios legacy (ya no se ofrecen, pero pueden existir en pedidos históricos)
+const SERVICES_LEGACY = {
+  combo: { label: "DuoBoost + Coaching", icon: Sparkles, color: "#E8B349", desc: "Servicio histórico." },
+};
+const svcOf = (k) => SERVICES[k] || SERVICES_LEGACY[k] || SERVICES.duoboost;
 const DISCORD_INVITE = "https://discord.gg/AfmjdnbNgC";
 const STATUS_FLOW = ["pending", "available", "in_progress", "completed"];
 const STATUS_LABEL = { pending: "En revisión", available: "Disponible", in_progress: "En proceso", completed: "Finalizado", cancelled: "Cancelado" };
@@ -182,7 +187,7 @@ function StatusBadge({ s }) {
   const ic = { pending: <Clock size={11} />, available: <Zap size={11} />, in_progress: <Play size={11} />, completed: <Check size={11} />, cancelled: <X size={11} /> }[s];
   return <span className={"nop-status s-" + s}>{ic}{STATUS_LABEL[s]}</span>;
 }
-function SvcTag({ s }) { const S = SERVICES[s] || SERVICES.duoboost; const Ic = S.icon; return <span className="nop-svc" style={{ color: S.color, borderColor: S.color + "44" }}><Ic size={12} />{S.label}</span>; }
+function SvcTag({ s }) { const S = svcOf(s); const Ic = S.icon; return <span className="nop-svc" style={{ color: S.color, borderColor: S.color + "44" }}><Ic size={12} />{S.label}</span>; }
 function Stars({ value, onChange }) {
   return <div className="nop-stars">{[1, 2, 3, 4, 5].map((n) => (
     <button key={n} type="button" className={"nop-starbtn" + (n <= value ? " on" : "")} onClick={() => onChange && onChange(n)} disabled={!onChange}>★</button>))}</div>;
@@ -2008,7 +2013,7 @@ function OrderModal({ o, onClose, onDelete, hideProfit, onEdited }) {
 }
 
 /* ===================== CONTABLE (ADMIN) ===================== */
-function AdminFinance({ orders, profiles, flash }) {
+function AdminFinance({ orders, profiles, flash, reload }) {
   const mKey = (d) => { if (!d) return null; const x = new Date(d); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0"); };
   const mLabel = (k) => { if (!k || k === "all") return "Todo el histórico"; const [y, m] = k.split("-"); return new Date(y, m - 1, 1).toLocaleDateString("es-AR", { month: "long", year: "numeric" }); };
   const thisMonth = mKey(new Date());
@@ -2056,8 +2061,10 @@ function AdminFinance({ orders, profiles, flash }) {
   }, [orders, conversions]);
   const inMonth = (o) => mKey(o.completed_at || o.created_at) === month;
   const monthDone = billed.filter(inMonth);
-  // Pagos a boosters: SOLO servicios finalizados (completed) del mes
-  const boosterPayList = completed.filter(inMonth).filter((o) => o.booster_id);
+  // Pagos a boosters: SOLO servicios finalizados (completed) con booster.
+  const completedWithBooster = completed.filter((o) => o.booster_id);
+  const payPending = completedWithBooster.filter((o) => !o.booster_paid);
+  const payDoneThisMonth = completedWithBooster.filter((o) => o.booster_paid && mKey(o.booster_paid_at || o.completed_at) === month);
 
   // --- INGRESOS ---
   const arsOrders = monthDone.filter((o) => (o.currency || "ars") === "ars");
@@ -2147,8 +2154,9 @@ function AdminFinance({ orders, profiles, flash }) {
       if (ans) { ccy = "usd"; usd = Number(o.price) ? Math.round(Number(o.usd_amount) * Number(o.booster_pay) / Number(o.price) * 100) / 100 : 0; }
     }
     await supabase.from("orders").update({ booster_paid: paid, booster_paid_at: paid ? new Date().toISOString() : null, booster_paid_ccy: ccy, booster_paid_usd: usd }).eq("id", o.id);
-    o.booster_paid = paid; o.booster_paid_ccy = ccy; o.booster_paid_usd = usd; setBusy((b) => b);
+    o.booster_paid = paid; o.booster_paid_ccy = ccy; o.booster_paid_usd = usd;
     flash(paid ? `Pago del #${o.id} marcado como pagado` : `Pago del #${o.id} marcado como pendiente`);
+    if (reload) await reload();
   };
 
   const addExpense = async (label, amount, recurring, currency) => {
@@ -2241,23 +2249,42 @@ function AdminFinance({ orders, profiles, flash }) {
       </div>
     </div>
 
-    {/* PAGOS A BOOSTERS — solo servicios finalizados */}
+    {/* PAGOS A BOOSTERS — pendientes siempre + pagados del mes */}
     <div className="nop-card nop-panel" style={{ marginBottom: 14 }}>
-      <div className="nop-panel-h"><Swords size={15} style={{ color: "var(--cyan)" }} />Pagos a boosters · {mLabel(month)} <span className="nop-mini" style={{ marginLeft: "auto", fontWeight: 400 }}>Deuda pendiente: <b style={{ color: "var(--amber)" }}>{fmtARS(boosterPayList.filter((o) => !o.booster_paid).reduce((a, o) => a + Number(o.booster_pay || 0), 0))}</b></span></div>
-      {boosterPayList.length === 0 ? <Empty icon={Wallet} title="Sin servicios finalizados este mes" sub="Solo aparecen acá los servicios ya completados por el booster." /> :
+      <div className="nop-panel-h"><Swords size={15} style={{ color: "var(--amber)" }} />Pagos pendientes a boosters <span className="nop-mini" style={{ marginLeft: "auto", fontWeight: 400 }}>Deuda total: <b style={{ color: "var(--amber)" }}>{fmtARS(payPending.reduce((a, o) => a + Number(o.booster_pay || 0), 0))}</b></span></div>
+      <p className="nop-mini" style={{ marginBottom: 12 }}>Servicios finalizados sin pagar. Aparecen acá hasta que los marques como pagados, sin importar el mes en que se hicieron.</p>
+      {payPending.length === 0 ? <Empty icon={Check} title="No hay pagos pendientes" sub="Todos los servicios finalizados ya fueron pagados." /> :
         <div className="nop-tablewrap"><table className="nop-t">
-          <thead><tr><th>#</th><th>Booster</th><th>Alias / CBU</th><th>Servicio</th><th>Cobro</th><th>Pago booster</th><th>Estado</th></tr></thead>
-          <tbody>{boosterPayList.map((o) => <tr key={o.id}>
+          <thead><tr><th>#</th><th>Booster</th><th>Alias / CBU</th><th>Servicio</th><th>Finalizado</th><th>Pago booster</th><th>Acción</th></tr></thead>
+          <tbody>{payPending.map((o) => <tr key={o.id}>
             <td>#{o.id}</td><td>{o.booster_name || "—"}</td>
             <td className="nop-mini">{(profiles || []).find((p) => p.id === o.booster_id)?.cbu || "—"}</td>
             <td><SvcTag s={o.service} /></td>
-            <td>{o.currency === "usd" ? fmtUSD(o.usd_amount) : fmtARS(o.price)}</td>
+            <td className="nop-mini">{o.completed_at ? new Date(o.completed_at).toLocaleDateString("es-AR") : "—"}</td>
             <td style={{ color: "var(--cyan)" }}>{fmtARS(o.booster_pay)}</td>
             <td><div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-              <button className={"nop-btn nop-btn-sm " + (o.booster_paid ? "nop-btn-grn" : "nop-btn-ghost")} onClick={() => togglePaid(o, !o.booster_paid)}>{o.booster_paid ? <><Check size={13} />Pagado</> : "Marcar pagado"}</button>
+              <button className="nop-btn nop-btn-gold nop-btn-sm" onClick={() => togglePaid(o, true)}><Check size={13} />Marcar pagado</button>
               {o.booster_receipt_path
                 ? <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => openReceipt(o.booster_receipt_path)}><Eye size={13} />Ver</button>
                 : <label className="nop-btn nop-btn-ghost nop-btn-sm" style={{ cursor: "pointer" }}><Upload size={13} />Adjuntar<input type="file" accept="image/*,application/pdf" style={{ display: "none" }} onChange={(e) => uploadBoosterReceipt(o, e.target.files?.[0])} /></label>}
+            </div></td>
+          </tr>)}</tbody>
+        </table></div>}
+    </div>
+
+    <div className="nop-card nop-panel" style={{ marginBottom: 14 }}>
+      <div className="nop-panel-h"><Check size={15} style={{ color: "var(--grn)" }} />Pagos realizados · {mLabel(month)} <span className="nop-mini" style={{ marginLeft: "auto", fontWeight: 400 }}>Total pagado: <b style={{ color: "var(--grn)" }}>{fmtARS(payDoneThisMonth.reduce((a, o) => a + Number(o.booster_pay || 0), 0))}</b></span></div>
+      {payDoneThisMonth.length === 0 ? <Empty icon={Wallet} title="Sin pagos este mes" sub="Los pagos marcados como realizados aparecen en el mes en que se pagaron." /> :
+        <div className="nop-tablewrap"><table className="nop-t">
+          <thead><tr><th>#</th><th>Booster</th><th>Servicio</th><th>Pagado el</th><th>Pago booster</th><th>Acción</th></tr></thead>
+          <tbody>{payDoneThisMonth.map((o) => <tr key={o.id}>
+            <td>#{o.id}</td><td>{o.booster_name || "—"}</td>
+            <td><SvcTag s={o.service} /></td>
+            <td className="nop-mini">{o.booster_paid_at ? new Date(o.booster_paid_at).toLocaleDateString("es-AR") : "—"}</td>
+            <td style={{ color: "var(--grn)" }}>{fmtARS(o.booster_pay)}</td>
+            <td><div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+              <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => togglePaid(o, false)}>Revertir</button>
+              {o.booster_receipt_path && <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => openReceipt(o.booster_receipt_path)}><Eye size={13} />Ver</button>}
             </div></td>
           </tr>)}</tbody>
         </table></div>}
