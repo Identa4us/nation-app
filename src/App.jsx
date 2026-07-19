@@ -161,6 +161,10 @@ async function fetchBlue() {
     return v > 0 ? v : null;
   } catch (e) { return null; }
 }
+// Servidores válidos para una cuenta
+const ACCOUNT_SERVERS = ["LAS", "LAN", "NA", "BR", "EUW", "EUNE", "KR", "OCE"];
+// URL pública de la portada de una cuenta (bucket público "cuentas")
+const accCoverUrl = (path) => { try { return path ? supabase.storage.from("cuentas").getPublicUrl(path).data.publicUrl : null; } catch (e) { return null; } };
 function svcDuration(o) {
   const start = o.accepted_at || o.created_at;
   const end = o.completed_at;
@@ -210,6 +214,7 @@ export default function App() {
   const [orders, setOrders] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [accounts, setAccounts] = useState([]);
+  const [accountRequests, setAccountRequests] = useState([]);
   const [notifs, setNotifs] = useState([]);
   const [drawer, setDrawer] = useState(false);
   const [toast, setToast] = useState("");
@@ -273,10 +278,16 @@ export default function App() {
     if (profile.role === "admin" || profile.role === "booster") {
       const { data: acc } = await supabase.from("game_accounts").select("*").order("created_at", { ascending: false });
       setAccounts(acc || []);
+    } else {
+      // cliente: solo cuentas publicadas para la venta (vista pública, SIN credenciales)
+      const { data: acc } = await supabase.from("client_accounts").select("*").order("created_at", { ascending: false });
+      setAccounts(acc || []);
     }
     if (profile.role === "admin") {
       const { data: pf } = await supabase.from("profiles").select("*").order("created_at", { ascending: false });
       setProfiles(pf || []);
+      const { data: reqs } = await supabase.from("account_requests").select("*").order("created_at", { ascending: false });
+      setAccountRequests(reqs || []);
     }
   }, [profile]);
   reloadRef.current = reload;
@@ -290,6 +301,7 @@ export default function App() {
       .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, () => reloadRef.current())
       .on("postgres_changes", { event: "*", schema: "public", table: "notifications" }, () => reloadRef.current())
       .on("postgres_changes", { event: "*", schema: "public", table: "game_accounts" }, () => reloadRef.current())
+      .on("postgres_changes", { event: "*", schema: "public", table: "account_requests" }, () => reloadRef.current())
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [profile]);
@@ -422,7 +434,7 @@ export default function App() {
     }
   };
 
-  const ctx = { profile, orders, profiles, accounts, reload, flash, notify, deleteOrder, deleteUser, editUserAuth };
+  const ctx = { profile, orders, profiles, accounts, accountRequests, reload, flash, notify, deleteOrder, deleteUser, editUserAuth };
   const avatarColor = profile.role === "admin" ? "var(--gold)" : profile.role === "booster" ? "var(--cyan)" : "var(--violet)";
 
   return (
@@ -438,7 +450,7 @@ export default function App() {
             <span className="nop-avatar" style={{ background: avatarColor }}>{(profile.full_name || "?")[0]?.toUpperCase()}</span></button>
           <button className="nop-iconbtn" onClick={logout} title="Salir"><LogOut size={16} /></button>
         </div>
-        <Tabs role={profile.role} tab={tab} setTab={setTab} orders={orders} profiles={profiles} />
+        <Tabs role={profile.role} tab={tab} setTab={setTab} orders={orders} profiles={profiles} accountRequests={accountRequests} />
       </div></div>
 
       <div className="nop-shell"><div className="nop-page">
@@ -724,14 +736,15 @@ function SetNewPassword({ onDone }) {
 }
 
 /* ===================== TABS ===================== */
-function Tabs({ role, tab, setTab, orders, profiles }) {
+function Tabs({ role, tab, setTab, orders, profiles, accountRequests }) {
   const T = (id, label, Icon, badge) => (
     <button className={"nop-tab" + (tab === id ? " on" : "")} onClick={() => setTab(id)}>
       <Icon className="ic" size={16} />{label}{badge ? <span style={{ background: "var(--gold)", color: "#1a1305", borderRadius: 99, fontSize: 10, fontWeight: 700, padding: "1px 7px" }}>{badge}</span> : null}
     </button>
   );
   if (role === "admin") {
-    const pend = orders.filter((o) => o.status === "pending").length + profiles.filter((p) => p.role === "booster" && p.status === "pending").length;
+    const reqPend = (accountRequests || []).filter((r) => r.status === "pending").length;
+    const pend = orders.filter((o) => o.status === "pending").length + profiles.filter((p) => p.role === "booster" && p.status === "pending").length + reqPend;
     return <div className="nop-tabs">
       {T("validate", "Validaciones", ShieldCheck, pend || null)}
       {T("dash", "Dashboard", Activity)}
@@ -751,7 +764,7 @@ function Tabs({ role, tab, setTab, orders, profiles }) {
       {T("hist", "Mi historial", Trophy)}
     </div>;
   }
-  return <div className="nop-tabs">{T("home", "Mi pedido", Activity)}{T("new", "Solicitar servicio", Plus)}{T("hist", "Historial", Trophy)}</div>;
+  return <div className="nop-tabs">{T("home", "Mi pedido", Activity)}{T("new", "Solicitar servicio", Plus)}{T("accounts", "Cuentas", Gamepad2)}{T("hist", "Historial", Trophy)}</div>;
 }
 
 /* ===================== DRAWER ===================== */
@@ -801,10 +814,21 @@ function AdminUsers({ ...ctx }) {
   </>;
 }
 
-function AdminValidate({ orders, profiles, reload, flash, notify }) {
+function AdminValidate({ orders, profiles, accountRequests, reload, flash, notify }) {
   const pendingOrders = orders.filter((o) => o.status === "pending");
   const pendingBoosters = profiles.filter((p) => p.role === "booster" && p.status === "pending");
+  const pendingReqs = (accountRequests || []).filter((r) => r.status === "pending");
   const [expanded, setExpanded] = useState({});
+
+  const handleReq = async (r) => {
+    await supabase.from("account_requests").update({ status: "handled", handled_at: new Date().toISOString() }).eq("id", r.id);
+    await reload(); flash("Solicitud marcada como gestionada");
+  };
+  const deleteReq = async (r) => {
+    if (!window.confirm("¿Eliminar esta solicitud de cuenta?")) return;
+    await supabase.from("account_requests").delete().eq("id", r.id);
+    await reload(); flash("Solicitud eliminada");
+  };
 
   const validateOrder = async (o) => {
     await supabase.from("orders").update({ status: "available" }).eq("id", o.id);
@@ -864,6 +888,29 @@ function AdminValidate({ orders, profiles, reload, flash, notify }) {
   return <>
     <div className="nop-sectionhead"><div><h1 className="nop-h1">Validaciones</h1>
       <p className="nop-sub">Aceptá o rechazá boosters nuevos y validá los pedidos pagos.</p></div></div>
+
+    {pendingReqs.length > 0 && <div className="nop-card nop-panel" style={{ marginBottom: 16, borderColor: "var(--gold)" }}>
+      <div className="nop-panel-h"><Gamepad2 size={15} style={{ color: "var(--gold)" }} />Cuentas solicitadas ({pendingReqs.length})</div>
+      <div style={{ display: "grid", gap: 10 }}>{pendingReqs.map((r) => (
+        <div className="nop-card nop-panel" key={r.id} style={{ background: "var(--bg2)", display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+            <Gamepad2 size={18} style={{ color: "var(--gold)" }} />
+            <div>
+              <b style={{ fontSize: 13 }}>{r.account_title || "Cuenta"}</b>
+              <div className="nop-mini">{r.account_rank || "—"}{r.account_server ? ` · ${r.account_server}` : ""}{r.account_price_ars ? ` · ${fmtARS(r.account_price_ars)}` : ""}{r.account_price_usd ? ` · ${fmtUSD(r.account_price_usd)}` : ""}</div>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <div style={{ textAlign: "right" }}>
+              <div className="nop-mini" style={{ color: "var(--mut2)" }}>Solicitó</div>
+              <b style={{ fontSize: 13 }}>{r.client_name || "—"}</b>
+              <div className="nop-mini">{r.client_discord || ""}</div>
+            </div>
+            <button className="nop-btn nop-btn-grn nop-btn-sm" onClick={() => handleReq(r)}><Check size={14} />Gestionada</button>
+            <button className="nop-btn nop-btn-danger nop-btn-sm" onClick={() => deleteReq(r)}><Trash2 size={13} /></button>
+          </div>
+        </div>))}</div>
+    </div>}
 
     <div className="nop-card nop-panel" style={{ marginBottom: 16 }}>
       <div className="nop-panel-h"><UserCheck size={15} style={{ color: "var(--cyan)" }} />Boosters por aprobar ({pendingBoosters.length})</div>
@@ -2570,6 +2617,7 @@ function BoosterHist({ profile, orders }) {
 function ClientViews({ tab, setTab, ...ctx }) {
   if (tab === "new") return <ClientNew {...ctx} setTab={setTab} />;
   if (tab === "hist") return <ClientHistory {...ctx} />;
+  if (tab === "accounts") return <ClientAccounts {...ctx} setTab={setTab} />;
   return <ClientHome {...ctx} setTab={setTab} />;
 }
 function ClientHome({ profile, orders, reload, flash, notify, setTab }) {
@@ -3524,23 +3572,42 @@ function PromoForm({ onClose, onSaved, flash }) {
   </div></div>;
 }
 
-function AdminAccounts({ accounts, profiles, reload, flash }) {
+/* ===================== CUENTAS ===================== */
+function AdminAccounts({ accounts, profiles, accountRequests, reload, flash }) {
+  const [sub, setSub] = useState("booster");
+  const boosterAccts = (accounts || []).filter((a) => (a.kind || "booster") !== "client");
+  const clientAccts = (accounts || []).filter((a) => a.kind === "client");
+  return <>
+    <div className="nop-sectionhead"><div><h1 className="nop-h1">Cuentas</h1>
+      <p className="nop-sub">Pool para los boosters y catálogo de cuentas a la venta para los clientes.</p></div></div>
+    <div className="nop-segwrap" style={{ marginBottom: 16, gridTemplateColumns: "repeat(2,1fr)", maxWidth: 460 }}>
+      <button type="button" className={"nop-seg" + (sub === "booster" ? " on" : "")} onClick={() => setSub("booster")}>Cuentas boosters ({boosterAccts.length})</button>
+      <button type="button" className={"nop-seg" + (sub === "client" ? " on" : "")} onClick={() => setSub("client")}>Cuentas clientes ({clientAccts.length})</button>
+    </div>
+    {sub === "booster"
+      ? <AdminBoosterAccounts accounts={boosterAccts} profiles={profiles} reload={reload} flash={flash} />
+      : <AdminClientAccounts accounts={clientAccts} accountRequests={accountRequests} reload={reload} flash={flash} />}
+  </>;
+}
+
+/* ---- Sub-pestaña: cuentas para boosters (pool de trabajo) ---- */
+function AdminBoosterAccounts({ accounts, profiles, reload, flash }) {
   const [summoner, setSummoner] = useState("");
-  const [rk, setRk] = useState("Oro"), [rd, setRd] = useState("IV");
+  const [rk, setRk] = useState("Unranked"), [rd, setRd] = useState("IV");
   const [server, setServer] = useState("LAS");
   const [user, setUser] = useState(""), [pass, setPass] = useState("");
   const [estado, setEstado] = useState("activa");
   const [edit, setEdit] = useState(null);
+  const [promote, setPromote] = useState(null); // cuenta a convertir en cuenta de cliente
   const [assignFor, setAssignFor] = useState(null);
 
   const ACCOUNT_RANKS = ["Unranked", ...RANKS];
-  const SERVERS = ["LAS", "LAN", "NA", "BR", "EUW", "EUNE", "KR", "OCE"];
   const isUnranked = rk === "Unranked";
   const boosters = (profiles || []).filter((p) => p.role === "booster" && p.status === "active" && !isTestBooster(p));
   const rankStr = (r, d) => r === "Unranked" ? "Unranked" : r + (r !== "Master" ? " " + d : "");
   const create = async () => {
     if (!summoner) { flash("Falta el nombre de invocador."); return; }
-    const { error } = await supabase.from("game_accounts").insert({ summoner, rank: rankStr(rk, rd), server, login_user: user, login_pass: pass, status: estado });
+    const { error } = await supabase.from("game_accounts").insert({ kind: "booster", summoner, rank: rankStr(rk, rd), server, login_user: user, login_pass: pass, status: estado });
     if (error) { flash("No se pudo crear la cuenta: " + error.message); return; }
     setSummoner(""); setUser(""); setPass(""); setEstado("activa");
     await reload(); flash("Cuenta creada");
@@ -3560,10 +3627,8 @@ function AdminAccounts({ accounts, profiles, reload, flash }) {
   };
 
   return <>
-    <div className="nop-sectionhead"><div><h1 className="nop-h1">Cuentas</h1><p className="nop-sub">Pool de cuentas para los boosters. Crealas, actualizalas o deshabilitalas.</p></div></div>
-
     <div className="nop-card nop-panel" style={{ marginBottom: 16 }}>
-      <div className="nop-panel-h"><PlusIc size={15} style={{ color: "var(--cyan)" }} />Nueva cuenta</div>
+      <div className="nop-panel-h"><PlusIc size={15} style={{ color: "var(--cyan)" }} />Nueva cuenta (pool boosters)</div>
       <div className="nop-row3">
         <div className="nop-field" style={{ marginBottom: 12 }}><label>Nombre de invocador <span className="req">*</span></label>
           <input className="nop-input" value={summoner} onChange={(e) => setSummoner(e.target.value)} placeholder="Ej: SmurfNation01" /></div>
@@ -3573,7 +3638,7 @@ function AdminAccounts({ accounts, profiles, reload, flash }) {
             <select className="nop-select" value={rd} onChange={(e) => setRd(e.target.value)} disabled={rk === "Master" || isUnranked}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select>
           </div></div>
         <div className="nop-field" style={{ marginBottom: 12 }}><label>Servidor</label>
-          <select className="nop-select" value={server} onChange={(e) => setServer(e.target.value)}>{SERVERS.map((s) => <option key={s}>{s}</option>)}</select></div>
+          <select className="nop-select" value={server} onChange={(e) => setServer(e.target.value)}>{ACCOUNT_SERVERS.map((s) => <option key={s}>{s}</option>)}</select></div>
       </div>
       <div className="nop-row3">
         <div className="nop-field" style={{ marginBottom: 0 }}><label>Usuario (oculto)</label>
@@ -3606,11 +3671,13 @@ function AdminAccounts({ accounts, profiles, reload, flash }) {
             {a.status !== "deshabilitada"
               ? <button className="nop-btn nop-btn-ghost nop-btn-sm" disabled={a.status === "inactiva"} onClick={() => setStatus(a, "deshabilitada")}><Power size={13} />Deshabilitar</button>
               : <button className="nop-btn nop-btn-cyan nop-btn-sm" onClick={() => setStatus(a, "activa")}><Power size={13} />Activar</button>}
+            <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setPromote(a)} title="Pasar al catálogo de clientes"><ArrowRight size={13} />A clientes</button>
             <button className="nop-btn nop-btn-danger nop-btn-sm" onClick={() => del(a)}><Trash2 size={13} /></button>
           </div>
         </div>))}</div>}
 
     {edit && <AccountEdit a={edit} onClose={() => setEdit(null)} reload={reload} flash={flash} />}
+    {promote && <ClientAccountEditor a={promote} onClose={() => setPromote(null)} reload={reload} flash={flash} />}
     {assignFor && <div className="nop-modal" onClick={() => setAssignFor(null)}>
       <div className="nop-card nop-modalbox" style={{ maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
         <div className="hd"><h3>Asignar cuenta {assignFor.summoner}</h3><button className="nop-iconbtn" onClick={() => setAssignFor(null)}><X size={16} /></button></div>
@@ -3630,9 +3697,199 @@ function AdminAccounts({ accounts, profiles, reload, flash }) {
   </>;
 }
 
+/* ---- Sub-pestaña: cuentas para clientes (catálogo a la venta) ---- */
+function AdminClientAccounts({ accounts, accountRequests, reload, flash }) {
+  const [showNew, setShowNew] = useState(false);
+  const [edit, setEdit] = useState(null);
+  const [blue, setBlue] = useState(null);
+  useEffect(() => { fetchBlue().then(setBlue); }, []);
+  const reqCount = (a) => (accountRequests || []).filter((r) => r.account_id === a.id && r.status === "pending").length;
+  const del = async (a) => { if (!window.confirm(`¿Eliminar la cuenta "${a.summoner}"?`)) return; await supabase.from("game_accounts").delete().eq("id", a.id); await reload(); flash("Cuenta eliminada"); };
+  const setStatus = async (a, status) => { await supabase.from("game_accounts").update({ status }).eq("id", a.id); await reload(); flash(status === "activa" ? "Cuenta publicada" : "Cuenta oculta"); };
+
+  return <>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 16 }}>
+      <p className="nop-mini" style={{ margin: 0 }}>Cuentas visibles para los clientes en su pestaña “Cuentas”. Cargá portada, skins, esencia azul, precio y datos adicionales.</p>
+      <button className="nop-btn nop-btn-gold nop-btn-sm" onClick={() => setShowNew(true)}><PlusIc size={14} />Nueva cuenta de cliente</button>
+    </div>
+
+    {accounts.length === 0 ? <Empty icon={Gamepad2} title="Sin cuentas para clientes" sub="Creá una nueva o pasá una cuenta desde la pestaña de boosters." /> :
+      <div className="nop-acc-grid">{accounts.map((a) => (
+        <AccountSaleCard key={a.id} a={a} blue={blue} showExtra admin>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            {reqCount(a) > 0 && <span className="nop-svc" style={{ background: "rgba(232,179,73,.15)", borderColor: "var(--gold)", color: "var(--gold)" }}>🛒 {reqCount(a)} solicitud{reqCount(a) > 1 ? "es" : ""}</span>}
+            <AccStatusBadge s={a.status} />
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
+            <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setEdit(a)}><Settings size={13} />Editar</button>
+            {a.status === "activa"
+              ? <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setStatus(a, "deshabilitada")}><EyeOff size={13} />Ocultar</button>
+              : <button className="nop-btn nop-btn-cyan nop-btn-sm" onClick={() => setStatus(a, "activa")}><Eye size={13} />Publicar</button>}
+            <button className="nop-btn nop-btn-danger nop-btn-sm" onClick={() => del(a)}><Trash2 size={13} /></button>
+          </div>
+        </AccountSaleCard>
+      ))}</div>}
+
+    {(showNew || edit) && <ClientAccountEditor a={edit} onClose={() => { setShowNew(false); setEdit(null); }} reload={reload} flash={flash} />}
+  </>;
+}
+
+/* ---- Card de cuenta a la venta (compartida admin + cliente) ---- */
+function AccountStatChip({ label, value }) {
+  if (value == null || value === "") return null;
+  const n = Number(value);
+  return <div style={{ background: "var(--bg2)", border: "1px solid var(--line)", borderRadius: 8, padding: "6px 10px", minWidth: 66 }}>
+    <div className="nop-mini" style={{ color: "var(--mut2)" }}>{label}</div>
+    <b style={{ fontSize: 13 }}>{isNaN(n) ? value : n.toLocaleString("es-AR")}</b>
+  </div>;
+}
+function AccountSaleCard({ a, blue, children, showExtra }) {
+  const cover = accCoverUrl(a.cover_path);
+  const rkColor = RANK_COLOR[String(a.rank || "").split(" ")[0]] || "var(--mut)";
+  const usd = a.price_usd != null ? a.price_usd : (blue && a.price_ars ? Math.round((Number(a.price_ars) / blue) * 100) / 100 : null);
+  return <div className="nop-card" style={{ overflow: "hidden", padding: 0, display: "flex", flexDirection: "column" }}>
+    <div style={{ position: "relative", height: 148, background: "var(--bg2)" }}>
+      {cover
+        ? <img src={cover} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+        : <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--mut2)" }}><Gamepad2 size={34} /></div>}
+      <div style={{ position: "absolute", top: 10, left: 10, display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {a.server && <span className="nop-svc" style={{ background: "rgba(6,10,20,.7)", borderColor: "transparent", color: "#fff", backdropFilter: "blur(4px)" }}>{a.server}</span>}
+        <span className="nop-svc" style={{ background: "rgba(6,10,20,.7)", borderColor: "transparent", color: rkColor, fontWeight: 700, backdropFilter: "blur(4px)" }}>{a.rank || "Unranked"}</span>
+      </div>
+    </div>
+    <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 12, flex: 1 }}>
+      <b style={{ fontSize: 15, lineHeight: 1.3, wordBreak: "break-word" }}>{a.summoner}</b>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <AccountStatChip label="Nivel" value={a.level} />
+        <AccountStatChip label="Campeones" value={a.champions} />
+        <AccountStatChip label="Skins" value={a.skins} />
+        <AccountStatChip label="Esencia azul" value={a.blue_essence} />
+      </div>
+      {showExtra && a.extra_info && <p className="nop-mini" style={{ whiteSpace: "pre-wrap", color: "var(--mut)", background: "var(--bg2)", padding: "8px 10px", borderRadius: 8, lineHeight: 1.5, margin: 0 }}>{a.extra_info}</p>}
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginTop: "auto" }}>
+        {a.price_ars != null && <b className="nop-display" style={{ fontSize: 20, color: "var(--gold)" }}>{fmtARS(a.price_ars)}</b>}
+        {usd != null && <span style={{ color: "var(--grn)", fontWeight: 700 }}>{fmtUSD(usd)}</span>}
+        {a.price_ars == null && usd == null && <span className="nop-mini">Precio a consultar</span>}
+      </div>
+      {children}
+    </div>
+  </div>;
+}
+
+/* ---- Editor de cuenta de cliente (crear / editar / promover) ---- */
+function ClientAccountEditor({ a, onClose, reload, flash }) {
+  const isNew = !a;
+  const ACCOUNT_RANKS = ["Unranked", ...RANKS];
+  const initRank = a?.rank || "Unranked";
+  const initIsUnranked = String(initRank).toLowerCase().startsWith("unranked");
+  const initParts = String(initRank).split(" ");
+  const [title, setTitle] = useState(a?.summoner || "");
+  const [rk, setRk] = useState(initIsUnranked ? "Unranked" : (RANKS.includes(initParts[0]) ? initParts[0] : "Unranked"));
+  const [rd, setRd] = useState(DIVS.includes(initParts[1]) ? initParts[1] : "IV");
+  const [server, setServer] = useState(a?.server || "LAS");
+  const [level, setLevel] = useState(a?.level ?? "");
+  const [champs, setChamps] = useState(a?.champions ?? "");
+  const [skins, setSkins] = useState(a?.skins ?? "");
+  const [be, setBe] = useState(a?.blue_essence ?? "");
+  const [priceArs, setPriceArs] = useState(a?.price_ars ?? "");
+  const [priceUsd, setPriceUsd] = useState(a?.price_usd ?? "");
+  const [extra, setExtra] = useState(a?.extra_info || "");
+  const [user, setUser] = useState(a?.login_user || "");
+  const [pass, setPass] = useState(a?.login_pass || "");
+  const [estado, setEstado] = useState(a?.status || "activa");
+  const [coverFile, setCoverFile] = useState(null);
+  const [coverPath] = useState(a?.cover_path || null);
+  const [blue, setBlue] = useState(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { fetchBlue().then(setBlue); }, []);
+  const rankStr = (r, d) => r === "Unranked" ? "Unranked" : r + (r !== "Master" ? " " + d : "");
+  const previewUrl = coverFile ? URL.createObjectURL(coverFile) : accCoverUrl(coverPath);
+  const usdSuggest = blue && priceArs ? Math.round((Number(priceArs) / blue) * 100) / 100 : null;
+
+  const save = async () => {
+    if (!title.trim()) { flash("Poné un título o nombre para la cuenta."); return; }
+    setBusy(true);
+    try {
+      let cover = coverPath;
+      if (coverFile) {
+        const ext = (coverFile.name.split(".").pop() || "jpg").toLowerCase();
+        const path = `client-accounts/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+        const up = await supabase.storage.from("cuentas").upload(path, coverFile, { upsert: true });
+        if (up.error) throw up.error;
+        cover = path;
+      }
+      const num = (v) => v === "" || v == null ? null : Number(v);
+      const row = {
+        kind: "client",
+        summoner: title.trim(),
+        rank: rankStr(rk, rd),
+        server,
+        level: num(level), champions: num(champs), skins: num(skins), blue_essence: num(be),
+        price_ars: num(priceArs), price_usd: num(priceUsd),
+        extra_info: extra || null,
+        login_user: user || null, login_pass: pass || null,
+        status: estado, cover_path: cover || null,
+      };
+      let error;
+      if (isNew) ({ error } = await supabase.from("game_accounts").insert(row));
+      else ({ error } = await supabase.from("game_accounts").update(row).eq("id", a.id));
+      if (error) throw error;
+      await reload(); flash(isNew ? "Cuenta de cliente creada" : "Cuenta actualizada"); onClose();
+    } catch (e) { flash("No se pudo guardar: " + (e.message || e)); } finally { setBusy(false); }
+  };
+
+  return <div className="nop-modal" onClick={onClose}><div className="nop-card nop-modalbox" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 620 }}>
+    <div className="hd"><h3>{isNew ? "Nueva cuenta de cliente" : "Editar cuenta de cliente"}</h3><button className="nop-iconbtn" onClick={onClose}><X size={16} /></button></div>
+    <div className="bd">
+      {/* Portada */}
+      <div className="nop-field"><label>Portada (visible para el cliente)</label>
+        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ width: 140, height: 84, borderRadius: 10, overflow: "hidden", background: "var(--bg2)", border: "1px solid var(--line)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            {previewUrl ? <img src={previewUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <Gamepad2 size={26} style={{ color: "var(--mut2)" }} />}
+          </div>
+          <label className="nop-btn nop-btn-ghost nop-btn-sm" style={{ cursor: "pointer" }}>
+            <Upload size={14} />{previewUrl ? "Cambiar imagen" : "Subir imagen"}
+            <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => setCoverFile(e.target.files?.[0] || null)} />
+          </label>
+        </div>
+      </div>
+      <div className="nop-field"><label>Título / nombre <span className="req">*</span></label>
+        <input className="nop-input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Ej: EUW · Diamante IV · 34 Skins" /></div>
+      <div className="nop-row3">
+        <div className="nop-field"><label>Liga</label><div className="nop-row2">
+          <select className="nop-select" value={rk} onChange={(e) => setRk(e.target.value)}>{ACCOUNT_RANKS.map((r) => <option key={r}>{r}</option>)}</select>
+          <select className="nop-select" value={rd} onChange={(e) => setRd(e.target.value)} disabled={rk === "Master" || rk === "Unranked"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select></div></div>
+        <div className="nop-field"><label>Servidor</label>
+          <select className="nop-select" value={server} onChange={(e) => setServer(e.target.value)}>{ACCOUNT_SERVERS.map((s) => <option key={s}>{s}</option>)}</select></div>
+        <div className="nop-field"><label>Estado</label>
+          <select className="nop-select" value={estado} onChange={(e) => setEstado(e.target.value)}><option value="activa">Publicada (visible)</option><option value="deshabilitada">Oculta</option></select></div>
+      </div>
+      <div className="nop-row2">
+        <div className="nop-field"><label>Nivel</label><input className="nop-input" type="number" value={level} onChange={(e) => setLevel(e.target.value)} placeholder="Ej: 107" /></div>
+        <div className="nop-field"><label>Campeones</label><input className="nop-input" type="number" value={champs} onChange={(e) => setChamps(e.target.value)} placeholder="Ej: 71" /></div>
+      </div>
+      <div className="nop-row2">
+        <div className="nop-field"><label>Skins</label><input className="nop-input" type="number" value={skins} onChange={(e) => setSkins(e.target.value)} placeholder="Ej: 34" /></div>
+        <div className="nop-field"><label>Esencia azul</label><input className="nop-input" type="number" value={be} onChange={(e) => setBe(e.target.value)} placeholder="Ej: 56200" /></div>
+      </div>
+      <div className="nop-row2">
+        <div className="nop-field"><label>Precio en ARS</label><input className="nop-input" type="number" value={priceArs} onChange={(e) => setPriceArs(e.target.value)} placeholder="Ej: 45000" /></div>
+        <div className="nop-field"><label>Precio en USD {usdSuggest ? `(sugerido: ${fmtUSD(usdSuggest)})` : ""}</label><input className="nop-input" type="number" step="0.01" value={priceUsd} onChange={(e) => setPriceUsd(e.target.value)} placeholder={usdSuggest ? String(usdSuggest) : "Ej: 40"} /></div>
+      </div>
+      <div className="nop-field"><label>Datos adicionales (visible para el cliente)</label>
+        <textarea className="nop-ta" value={extra} onChange={(e) => setExtra(e.target.value)} placeholder="Handleveled, email cambiable, sin baneos, acceso completo, RP disponibles, etc." /></div>
+      <div className="nop-row2">
+        <div className="nop-field"><label>Usuario de login (interno)</label><input className="nop-input" value={user} onChange={(e) => setUser(e.target.value)} placeholder="no se muestra al cliente" /></div>
+        <div className="nop-field"><label>Contraseña (interno)</label><input className="nop-input" value={pass} onChange={(e) => setPass(e.target.value)} placeholder="no se muestra al cliente" /></div>
+      </div>
+      <button className="nop-btn nop-btn-gold" style={{ width: "100%", marginTop: 4 }} disabled={busy} onClick={save}>{busy ? "Guardando…" : (isNew ? "Crear cuenta" : "Guardar cambios")}<Check size={15} /></button>
+    </div>
+  </div></div>;
+}
+
+/* ---- Editor mínimo (pool boosters) ---- */
 function AccountEdit({ a, onClose, reload, flash }) {
   const ACCOUNT_RANKS = ["Unranked", ...RANKS];
-  const SERVERS = ["LAS", "LAN", "NA", "BR", "EUW", "EUNE", "KR", "OCE"];
   const initRank = a.rank || "Oro IV";
   const initIsUnranked = initRank.toLowerCase().startsWith("unranked");
   const init = initRank.split(" ");
@@ -3655,7 +3912,7 @@ function AccountEdit({ a, onClose, reload, flash }) {
         <select className="nop-select" value={rk} onChange={(e) => setRk(e.target.value)}>{ACCOUNT_RANKS.map((r) => <option key={r}>{r}</option>)}</select>
         <select className="nop-select" value={rd} onChange={(e) => setRd(e.target.value)} disabled={rk === "Master" || rk === "Unranked"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select></div></div>
       <div className="nop-field"><label>Servidor</label>
-        <select className="nop-select" value={server} onChange={(e) => setServer(e.target.value)}>{SERVERS.map((s) => <option key={s}>{s}</option>)}</select></div>
+        <select className="nop-select" value={server} onChange={(e) => setServer(e.target.value)}>{ACCOUNT_SERVERS.map((s) => <option key={s}>{s}</option>)}</select></div>
       <div className="nop-field"><label>Usuario</label><input className="nop-input" value={user} onChange={(e) => setUser(e.target.value)} /></div>
       <div className="nop-field"><label>Contraseña</label><input className="nop-input" value={pass} onChange={(e) => setPass(e.target.value)} /></div>
       <button className="nop-btn nop-btn-gold" style={{ width: "100%" }} onClick={save}><Check size={15} />Guardar cambios</button>
@@ -3663,8 +3920,9 @@ function AccountEdit({ a, onClose, reload, flash }) {
   </div></div>;
 }
 
+/* ---- Vista booster: pool de cuentas de trabajo ---- */
 function BoosterAccounts({ profile, accounts, reload, flash }) {
-  const disponibles = accounts.filter((a) => a.status === "activa");
+  const disponibles = accounts.filter((a) => a.status === "activa" && (a.kind || "booster") !== "client");
   const mias = accounts.filter((a) => a.status === "inactiva" && a.taken_by === profile.id);
 
   const use = async (a) => {
@@ -3702,5 +3960,42 @@ function BoosterAccounts({ profile, accounts, reload, flash }) {
           <Cred label="Contraseña" value={a.login_pass} flash={flash} />
           <button className="nop-btn nop-btn-cyan nop-btn-sm" onClick={() => use(a)}><Check size={13} />Usar esta cuenta</button>
         </div>))}</div>}
+  </>;
+}
+
+/* ---- Vista cliente: catálogo de cuentas a la venta ---- */
+function ClientAccounts({ profile, accounts, reload, flash, notify }) {
+  const [blue, setBlue] = useState(null);
+  const [requested, setRequested] = useState({});
+  const [busyId, setBusyId] = useState(null);
+  useEffect(() => { fetchBlue().then(setBlue); }, []);
+  const list = (accounts || []).filter((a) => a.status === "activa");
+
+  const request = async (a) => {
+    setBusyId(a.id);
+    try {
+      const { error } = await supabase.from("account_requests").insert({
+        account_id: a.id, account_title: a.summoner, account_rank: a.rank, account_server: a.server,
+        account_price_ars: a.price_ars ?? null, account_price_usd: a.price_usd ?? null,
+        client_id: profile.id, client_name: profile.full_name, client_discord: profile.discord || profile.email,
+        status: "pending",
+      });
+      if (error) throw error;
+      try { await notify(`🛒 ${profile.full_name} solicitó la cuenta "${a.summoner}".`, "admin", null, "new"); } catch (e) {}
+      setRequested((r) => ({ ...r, [a.id]: true }));
+      flash("¡Solicitud enviada! Te vamos a contactar por Discord.");
+    } catch (e) { flash("No se pudo enviar la solicitud: " + (e.message || e)); } finally { setBusyId(null); }
+  };
+
+  return <>
+    <div className="nop-sectionhead"><div><h1 className="nop-h1">Cuentas en venta</h1><p className="nop-sub">Elegí una cuenta y solicitala. Coordinamos pago y entrega por Discord.</p></div></div>
+    {list.length === 0 ? <div className="nop-card"><Empty icon={Gamepad2} title="No hay cuentas disponibles" sub="Pronto vamos a publicar cuentas acá." /></div> :
+      <div className="nop-acc-grid">{list.map((a) => (
+        <AccountSaleCard key={a.id} a={a} blue={blue} showExtra>
+          {requested[a.id]
+            ? <button className="nop-btn nop-btn-grn" disabled style={{ width: "100%" }}><Check size={15} />Solicitada</button>
+            : <button className="nop-btn nop-btn-gold" disabled={busyId === a.id} style={{ width: "100%" }} onClick={() => request(a)}><Send size={15} />{busyId === a.id ? "Enviando…" : "Solicitar"}</button>}
+        </AccountSaleCard>
+      ))}</div>}
   </>;
 }
