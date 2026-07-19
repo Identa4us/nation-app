@@ -4005,6 +4005,12 @@ function ClientAccounts({ profile, accounts, accountRequests, reload, flash, not
   useEffect(() => { fetchBlue().then(setBlue); }, []);
 
   const norm = (s) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const consultar = (a) => {
+    const u = a.price_usd != null ? a.price_usd : (blue && a.price_ars ? Math.round((Number(a.price_ars) / blue) * 100) / 100 : null);
+    const price = [a.price_ars != null ? fmtARS(a.price_ars) : null, u != null ? fmtUSD(u) : null].filter(Boolean).join(" / ");
+    const msg = `Hola! Me interesa la cuenta "${a.summoner}" (${a.rank || "Unranked"}${a.server ? " · " + a.server : ""})${price ? " — " + price : ""}. Quería consultar.`;
+    window.open(SUPPORT_WA.split("&text=")[0] + "&text=" + encodeURIComponent(msg), "_blank");
+  };
   const myReqs = (accountRequests || []).filter((r) => r.client_id === profile.id);
   const reqByAccount = {};
   myReqs.forEach((r) => { if (r.account_id != null && (!reqByAccount[r.account_id] || new Date(r.created_at) > new Date(reqByAccount[r.account_id].created_at))) reqByAccount[r.account_id] = r; });
@@ -4070,9 +4076,14 @@ function ClientAccounts({ profile, accounts, accountRequests, reload, flash, not
       <div className="nop-acc-grid">{list.map((a) => {
         const mr = reqByAccount[a.id];
         return <AccountSaleCard key={a.id} a={a} blue={blue} showExtra onClick={() => setDetail(a)}>
-          {mr && mr.status === "pending"
-            ? <button className="nop-btn nop-btn-ghost" disabled style={{ width: "100%" }}><Clock size={15} />Solicitud enviada</button>
-            : <button className="nop-btn nop-btn-gold" style={{ width: "100%" }} onClick={() => setDetail(a)}><ChevronRight size={15} />Ver detalles</button>}
+          {mr && mr.status === "validated"
+            ? <button className="nop-btn nop-btn-grn" style={{ width: "100%" }} onClick={() => setDetail(a)}><Check size={15} />Comprada · ver datos</button>
+            : mr && mr.status === "pending"
+              ? <button className="nop-btn nop-btn-ghost" disabled style={{ width: "100%" }}><Clock size={15} />Esperando validación</button>
+              : <div style={{ display: "flex", gap: 8 }}>
+                  <button className="nop-btn nop-btn-ghost nop-btn-sm" style={{ flex: 1 }} onClick={() => consultar(a)}><MessageCircle size={14} />Consultar</button>
+                  <button className="nop-btn nop-btn-gold nop-btn-sm" style={{ flex: 1 }} onClick={() => setAcquire(a)}><Wallet size={14} />Adquirir</button>
+                </div>}
         </AccountSaleCard>;
       })}</div>}
 
