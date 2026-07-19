@@ -282,6 +282,9 @@ export default function App() {
       // cliente: solo cuentas publicadas para la venta (vista pública, SIN credenciales)
       const { data: acc } = await supabase.from("client_accounts").select("*").order("created_at", { ascending: false });
       setAccounts(acc || []);
+      // sus propias solicitudes de compra (para ver estado y credenciales desbloqueadas)
+      const { data: myReqs } = await supabase.from("account_requests").select("*").order("created_at", { ascending: false });
+      setAccountRequests(myReqs || []);
     }
     if (profile.role === "admin") {
       const { data: pf } = await supabase.from("profiles").select("*").order("created_at", { ascending: false });
@@ -820,9 +823,30 @@ function AdminValidate({ orders, profiles, accountRequests, reload, flash, notif
   const pendingReqs = (accountRequests || []).filter((r) => r.status === "pending");
   const [expanded, setExpanded] = useState({});
 
-  const handleReq = async (r) => {
-    await supabase.from("account_requests").update({ status: "handled", handled_at: new Date().toISOString() }).eq("id", r.id);
-    await reload(); flash("Solicitud marcada como gestionada");
+  const validateReq = async (r) => {
+    // desbloquear credenciales: copiar usuario/contraseña de la cuenta a la solicitud del cliente
+    let gu = null, gp = null;
+    if (r.account_id != null) {
+      const { data: acc } = await supabase.from("game_accounts").select("login_user, login_pass").eq("id", r.account_id).single();
+      gu = acc?.login_user || null; gp = acc?.login_pass || null;
+    }
+    await supabase.from("account_requests").update({ status: "validated", granted_user: gu, granted_pass: gp, validated_at: new Date().toISOString() }).eq("id", r.id);
+    // marcar la cuenta como vendida (sale del catálogo)
+    if (r.account_id != null) await supabase.from("game_accounts").update({ status: "deshabilitada" }).eq("id", r.account_id);
+    if (r.client_id) { try { await notify(`✅ Tu compra de "${r.account_title}" fue validada. Ya tenés el usuario y la contraseña en la pestaña Cuentas.`, null, r.client_id, "done"); } catch (e) {} }
+    await reload(); flash("Compra validada · credenciales desbloqueadas");
+  };
+  const rejectReq = async (r) => {
+    if (!window.confirm(`¿Rechazar la compra de "${r.account_title}" de ${r.client_name}?`)) return;
+    await supabase.from("account_requests").update({ status: "rejected" }).eq("id", r.id);
+    if (r.client_id) { try { await notify(`❌ Tu compra de "${r.account_title}" no pudo validarse. Escribinos si tenés dudas.`, null, r.client_id, "warn"); } catch (e) {} }
+    await reload(); flash("Solicitud rechazada");
+  };
+  const viewReqReceipt = async (r) => {
+    if (!r.receipt_path) { flash("Esta solicitud no tiene comprobante."); return; }
+    const { data, error } = await supabase.storage.from("comprobantes").createSignedUrl(r.receipt_path, 3600);
+    if (error || !data) { flash("No se pudo abrir el comprobante."); return; }
+    window.open(data.signedUrl, "_blank");
   };
   const deleteReq = async (r) => {
     if (!window.confirm("¿Eliminar esta solicitud de cuenta?")) return;
@@ -890,23 +914,26 @@ function AdminValidate({ orders, profiles, accountRequests, reload, flash, notif
       <p className="nop-sub">Aceptá o rechazá boosters nuevos y validá los pedidos pagos.</p></div></div>
 
     {pendingReqs.length > 0 && <div className="nop-card nop-panel" style={{ marginBottom: 16, borderColor: "var(--gold)" }}>
-      <div className="nop-panel-h"><Gamepad2 size={15} style={{ color: "var(--gold)" }} />Cuentas solicitadas ({pendingReqs.length})</div>
+      <div className="nop-panel-h"><Gamepad2 size={15} style={{ color: "var(--gold)" }} />Compras de cuentas por validar ({pendingReqs.length})</div>
       <div style={{ display: "grid", gap: 10 }}>{pendingReqs.map((r) => (
         <div className="nop-card nop-panel" key={r.id} style={{ background: "var(--bg2)", display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
           <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
             <Gamepad2 size={18} style={{ color: "var(--gold)" }} />
             <div>
               <b style={{ fontSize: 13 }}>{r.account_title || "Cuenta"}</b>
-              <div className="nop-mini">{r.account_rank || "—"}{r.account_server ? ` · ${r.account_server}` : ""}{r.account_price_ars ? ` · ${fmtARS(r.account_price_ars)}` : ""}{r.account_price_usd ? ` · ${fmtUSD(r.account_price_usd)}` : ""}</div>
+              <div className="nop-mini">{r.account_rank || "—"}{r.account_server ? ` · ${r.account_server}` : ""}
+                {r.currency === "usd" ? (r.account_price_usd ? ` · ${fmtUSD(r.account_price_usd)} (PayPal)` : " · USD (PayPal)") : (r.account_price_ars ? ` · ${fmtARS(r.account_price_ars)} (transf.)` : " · ARS (transf.)")}</div>
             </div>
           </div>
-          <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
             <div style={{ textAlign: "right" }}>
               <div className="nop-mini" style={{ color: "var(--mut2)" }}>Solicitó</div>
               <b style={{ fontSize: 13 }}>{r.client_name || "—"}</b>
               <div className="nop-mini">{r.client_discord || ""}</div>
             </div>
-            <button className="nop-btn nop-btn-grn nop-btn-sm" onClick={() => handleReq(r)}><Check size={14} />Gestionada</button>
+            <button className="nop-btn nop-btn-cyan nop-btn-sm" onClick={() => viewReqReceipt(r)} disabled={!r.receipt_path}><FileText size={13} />{r.receipt_path ? "Comprobante" : "Sin comprob."}</button>
+            <button className="nop-btn nop-btn-grn nop-btn-sm" onClick={() => validateReq(r)}><Check size={14} />Validar</button>
+            <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => rejectReq(r)}><X size={13} />Rechazar</button>
             <button className="nop-btn nop-btn-danger nop-btn-sm" onClick={() => deleteReq(r)}><Trash2 size={13} /></button>
           </div>
         </div>))}</div>
@@ -3735,19 +3762,22 @@ function AdminClientAccounts({ accounts, accountRequests, reload, flash }) {
 }
 
 /* ---- Card de cuenta a la venta (compartida admin + cliente) ---- */
-function AccountStatChip({ label, value }) {
+function AccountStatChip({ icon: Icon, label, value }) {
   if (value == null || value === "") return null;
   const n = Number(value);
-  return <div style={{ background: "var(--bg2)", border: "1px solid var(--line)", borderRadius: 8, padding: "6px 10px", minWidth: 66 }}>
-    <div className="nop-mini" style={{ color: "var(--mut2)" }}>{label}</div>
-    <b style={{ fontSize: 13 }}>{isNaN(n) ? value : n.toLocaleString("es-AR")}</b>
+  return <div style={{ display: "flex", alignItems: "center", gap: 8, background: "var(--bg2)", border: "1px solid var(--line)", borderRadius: 10, padding: "7px 10px" }}>
+    {Icon && <Icon size={16} style={{ color: "var(--gold)", flexShrink: 0 }} />}
+    <div style={{ minWidth: 0 }}>
+      <div className="nop-mini" style={{ color: "var(--mut2)", lineHeight: 1.1 }}>{label}</div>
+      <b style={{ fontSize: 13 }}>{isNaN(n) ? value : n.toLocaleString("es-AR")}</b>
+    </div>
   </div>;
 }
-function AccountSaleCard({ a, blue, children, showExtra }) {
+function AccountSaleCard({ a, blue, children, showExtra, onClick }) {
   const cover = accCoverUrl(a.cover_path);
   const rkColor = RANK_COLOR[String(a.rank || "").split(" ")[0]] || "var(--mut)";
   const usd = a.price_usd != null ? a.price_usd : (blue && a.price_ars ? Math.round((Number(a.price_ars) / blue) * 100) / 100 : null);
-  return <div className="nop-card" style={{ overflow: "hidden", padding: 0, display: "flex", flexDirection: "column" }}>
+  return <div className="nop-card" style={{ overflow: "hidden", padding: 0, display: "flex", flexDirection: "column", cursor: onClick ? "pointer" : "default" }} onClick={onClick}>
     <div style={{ position: "relative", height: 148, background: "var(--bg2)" }}>
       {cover
         ? <img src={cover} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
@@ -3760,18 +3790,18 @@ function AccountSaleCard({ a, blue, children, showExtra }) {
     <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 12, flex: 1 }}>
       <b style={{ fontSize: 15, lineHeight: 1.3, wordBreak: "break-word" }}>{a.summoner}</b>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <AccountStatChip label="Nivel" value={a.level} />
-        <AccountStatChip label="Campeones" value={a.champions} />
-        <AccountStatChip label="Skins" value={a.skins} />
-        <AccountStatChip label="Esencia azul" value={a.blue_essence} />
+        <AccountStatChip icon={Crown} label="Nivel" value={a.level} />
+        <AccountStatChip icon={Swords} label="Campeones" value={a.champions} />
+        <AccountStatChip icon={Sparkles} label="Skins" value={a.skins} />
+        <AccountStatChip icon={Zap} label="Esencia azul" value={a.blue_essence} />
       </div>
-      {showExtra && a.extra_info && <p className="nop-mini" style={{ whiteSpace: "pre-wrap", color: "var(--mut)", background: "var(--bg2)", padding: "8px 10px", borderRadius: 8, lineHeight: 1.5, margin: 0 }}>{a.extra_info}</p>}
+      {showExtra && a.extra_info && <p className="nop-mini" style={{ whiteSpace: "pre-wrap", color: "var(--mut)", background: "var(--bg2)", padding: "8px 10px", borderRadius: 8, lineHeight: 1.5, margin: 0, display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{a.extra_info}</p>}
       <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginTop: "auto" }}>
         {a.price_ars != null && <b className="nop-display" style={{ fontSize: 20, color: "var(--gold)" }}>{fmtARS(a.price_ars)}</b>}
         {usd != null && <span style={{ color: "var(--grn)", fontWeight: 700 }}>{fmtUSD(usd)}</span>}
         {a.price_ars == null && usd == null && <span className="nop-mini">Precio a consultar</span>}
       </div>
-      {children}
+      {children && <div onClick={(e) => e.stopPropagation()}>{children}</div>}
     </div>
   </div>;
 }
@@ -3964,38 +3994,232 @@ function BoosterAccounts({ profile, accounts, reload, flash }) {
 }
 
 /* ---- Vista cliente: catálogo de cuentas a la venta ---- */
-function ClientAccounts({ profile, accounts, reload, flash, notify }) {
+function ClientAccounts({ profile, accounts, accountRequests, reload, flash, notify }) {
   const [blue, setBlue] = useState(null);
-  const [requested, setRequested] = useState({});
-  const [busyId, setBusyId] = useState(null);
+  const [q, setQ] = useState("");
+  const [fLiga, setFLiga] = useState("todas");
+  const [fRegion, setFRegion] = useState("todas");
+  const [fLevel, setFLevel] = useState("todos");
+  const [detail, setDetail] = useState(null);
+  const [acquire, setAcquire] = useState(null);
   useEffect(() => { fetchBlue().then(setBlue); }, []);
-  const list = (accounts || []).filter((a) => a.status === "activa");
 
-  const request = async (a) => {
-    setBusyId(a.id);
+  const norm = (s) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const consultar = (a) => {
+    const u = a.price_usd != null ? a.price_usd : (blue && a.price_ars ? Math.round((Number(a.price_ars) / blue) * 100) / 100 : null);
+    const price = [a.price_ars != null ? fmtARS(a.price_ars) : null, u != null ? fmtUSD(u) : null].filter(Boolean).join(" / ");
+    const msg = `Hola! Me interesa la cuenta "${a.summoner}" (${a.rank || "Unranked"}${a.server ? " · " + a.server : ""})${price ? " — " + price : ""}. Quería consultar.`;
+    window.open(SUPPORT_WA.split("&text=")[0] + "&text=" + encodeURIComponent(msg), "_blank");
+  };
+  const myReqs = (accountRequests || []).filter((r) => r.client_id === profile.id);
+  const reqByAccount = {};
+  myReqs.forEach((r) => { if (r.account_id != null && (!reqByAccount[r.account_id] || new Date(r.created_at) > new Date(reqByAccount[r.account_id].created_at))) reqByAccount[r.account_id] = r; });
+  const pendingMine = myReqs.filter((r) => r.status === "pending" || r.status === "validated");
+
+  const LEVELS = [
+    { k: "todos", label: "Nivel: todos", test: () => true },
+    { k: "1", label: "1 – 29", test: (n) => n != null && !isNaN(n) && n < 30 },
+    { k: "30", label: "30 – 99", test: (n) => n >= 30 && n < 100 },
+    { k: "100", label: "100 – 199", test: (n) => n >= 100 && n < 200 },
+    { k: "200", label: "200+", test: (n) => n >= 200 },
+  ];
+  const LIGAS = ["Unranked", ...RANKS];
+
+  let list = (accounts || []).filter((a) => a.status === "activa");
+  if (fLiga !== "todas") list = list.filter((a) => String(a.rank || "Unranked").split(" ")[0] === fLiga);
+  if (fRegion !== "todas") list = list.filter((a) => a.server === fRegion);
+  if (fLevel !== "todos") { const lv = LEVELS.find((x) => x.k === fLevel); if (lv) list = list.filter((a) => lv.test(Number(a.level))); }
+  if (q.trim()) { const nq = norm(q); list = list.filter((a) => norm(a.extra_info).includes(nq) || norm(a.summoner).includes(nq)); }
+
+  return <>
+    <div className="nop-sectionhead"><div><h1 className="nop-h1">Cuentas en venta</h1><p className="nop-sub">Tocá una cuenta para ver todos los detalles, consultá o adquirila.</p></div></div>
+
+    {pendingMine.length > 0 && <div className="nop-card nop-panel" style={{ marginBottom: 16 }}>
+      <div className="nop-panel-h"><Gamepad2 size={15} style={{ color: "var(--violet)" }} />Mis solicitudes ({pendingMine.length})</div>
+      <div style={{ display: "grid", gap: 10 }}>{pendingMine.map((r) => (
+        <div className="nop-card" key={r.id} style={{ padding: 12, background: "var(--bg2)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <div><b style={{ fontSize: 13 }}>{r.account_title || "Cuenta"}</b><div className="nop-mini">{r.account_rank || "—"}{r.account_server ? ` · ${r.account_server}` : ""}</div></div>
+            {r.status === "validated"
+              ? <span className="nop-svc" style={{ background: "rgba(52,211,153,.15)", borderColor: "var(--grn)", color: "var(--grn)" }}><Check size={12} /> Validada</span>
+              : <span className="nop-svc" style={{ background: "rgba(232,179,73,.15)", borderColor: "var(--amber)", color: "var(--amber)" }}><Clock size={12} /> Esperando validación</span>}
+          </div>
+          {r.status === "validated" && (r.granted_user || r.granted_pass) && <div style={{ marginTop: 10 }}>
+            <p className="nop-mini" style={{ marginBottom: 8, color: "var(--grn)" }}>¡Compra validada! Datos de acceso:</p>
+            <Cred label="Usuario" value={r.granted_user} flash={flash} />
+            <div style={{ height: 8 }} />
+            <Cred label="Contraseña" value={r.granted_pass} flash={flash} />
+          </div>}
+        </div>))}</div>
+    </div>}
+
+    <div className="nop-card nop-panel" style={{ marginBottom: 14 }}>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ position: "relative", flex: 1, minWidth: 200 }}>
+          <Search size={15} style={{ position: "absolute", left: 12, top: 12, color: "var(--mut2)" }} />
+          <input className="nop-input" style={{ paddingLeft: 36 }} placeholder="Buscar por skin (ej: Elementalist Lux)" value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
+        <select className="nop-select" style={{ width: "auto", minWidth: 130 }} value={fLiga} onChange={(e) => setFLiga(e.target.value)}>
+          <option value="todas">Liga: todas</option>{LIGAS.map((r) => <option key={r} value={r}>{r}</option>)}
+        </select>
+        <select className="nop-select" style={{ width: "auto", minWidth: 130 }} value={fRegion} onChange={(e) => setFRegion(e.target.value)}>
+          <option value="todas">Región: todas</option>{ACCOUNT_SERVERS.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <select className="nop-select" style={{ width: "auto", minWidth: 130 }} value={fLevel} onChange={(e) => setFLevel(e.target.value)}>
+          {LEVELS.map((l) => <option key={l.k} value={l.k}>{l.label}</option>)}
+        </select>
+      </div>
+      <p className="nop-mini" style={{ marginTop: 8 }}>La búsqueda por skin filtra las cuentas que la mencionan en sus detalles.</p>
+    </div>
+
+    {list.length === 0 ? <div className="nop-card"><Empty icon={Gamepad2} title="Sin resultados" sub="Probá con otro filtro o buscá otra skin." /></div> :
+      <div className="nop-acc-grid">{list.map((a) => {
+        const mr = reqByAccount[a.id];
+        return <AccountSaleCard key={a.id} a={a} blue={blue} showExtra onClick={() => setDetail(a)}>
+          {mr && mr.status === "validated"
+            ? <button className="nop-btn nop-btn-grn" style={{ width: "100%" }} onClick={() => setDetail(a)}><Check size={15} />Comprada · ver datos</button>
+            : mr && mr.status === "pending"
+              ? <button className="nop-btn nop-btn-ghost" disabled style={{ width: "100%" }}><Clock size={15} />Esperando validación</button>
+              : <div style={{ display: "flex", gap: 8 }}>
+                  <button className="nop-btn nop-btn-ghost nop-btn-sm" style={{ flex: 1 }} onClick={() => consultar(a)}><MessageCircle size={14} />Consultar</button>
+                  <button className="nop-btn nop-btn-gold nop-btn-sm" style={{ flex: 1 }} onClick={() => setAcquire(a)}><Wallet size={14} />Adquirir</button>
+                </div>}
+        </AccountSaleCard>;
+      })}</div>}
+
+    {detail && <AccountDetailModal a={detail} blue={blue} myReq={reqByAccount[detail.id]} profile={profile} flash={flash}
+      onClose={() => setDetail(null)} onAcquire={() => { setAcquire(detail); setDetail(null); }} />}
+    {acquire && <AcquireAccountModal a={acquire} blue={blue} profile={profile} reload={reload} flash={flash} notify={notify} onClose={() => setAcquire(null)} />}
+  </>;
+}
+
+/* ---- Modal: detalle completo de la cuenta ---- */
+function AccountDetailModal({ a, blue, myReq, profile, flash, onClose, onAcquire }) {
+  const cover = accCoverUrl(a.cover_path);
+  const rkColor = RANK_COLOR[String(a.rank || "").split(" ")[0]] || "var(--mut)";
+  const usd = a.price_usd != null ? a.price_usd : (blue && a.price_ars ? Math.round((Number(a.price_ars) / blue) * 100) / 100 : null);
+  const consultar = () => {
+    const price = [a.price_ars != null ? fmtARS(a.price_ars) : null, usd != null ? fmtUSD(usd) : null].filter(Boolean).join(" / ");
+    const msg = `Hola! Me interesa la cuenta "${a.summoner}" (${a.rank || "Unranked"}${a.server ? " · " + a.server : ""})${price ? " — " + price : ""}. Quería consultar.`;
+    const base = SUPPORT_WA.split("&text=")[0];
+    window.open(base + "&text=" + encodeURIComponent(msg), "_blank");
+  };
+  return <div className="nop-modal" onClick={onClose}><div className="nop-card nop-modalbox" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560, padding: 0, overflow: "hidden" }}>
+    <div style={{ position: "relative", height: 180, background: "var(--bg2)" }}>
+      {cover ? <img src={cover} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--mut2)" }}><Gamepad2 size={40} /></div>}
+      <button className="nop-iconbtn" onClick={onClose} style={{ position: "absolute", top: 12, right: 12, background: "rgba(6,10,20,.6)" }}><X size={16} /></button>
+      <div style={{ position: "absolute", top: 12, left: 12, display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {a.server && <span className="nop-svc" style={{ background: "rgba(6,10,20,.7)", borderColor: "transparent", color: "#fff" }}>{a.server}</span>}
+        <span className="nop-svc" style={{ background: "rgba(6,10,20,.7)", borderColor: "transparent", color: rkColor, fontWeight: 700 }}>{a.rank || "Unranked"}</span>
+      </div>
+    </div>
+    <div className="bd" style={{ padding: 18 }}>
+      <h3 style={{ margin: "0 0 12px", fontSize: 18 }}>{a.summoner}</h3>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        <AccountStatChip icon={Crown} label="Nivel" value={a.level} />
+        <AccountStatChip icon={Swords} label="Campeones" value={a.champions} />
+        <AccountStatChip icon={Sparkles} label="Skins" value={a.skins} />
+        <AccountStatChip icon={Zap} label="Esencia azul" value={a.blue_essence} />
+      </div>
+      {a.extra_info && <div style={{ marginBottom: 14 }}>
+        <div className="nop-panel-h" style={{ marginBottom: 8 }}><FileText size={14} style={{ color: "var(--gold)" }} />Detalles de la cuenta</div>
+        <p className="nop-mini" style={{ whiteSpace: "pre-wrap", color: "var(--mut)", lineHeight: 1.6, margin: 0 }}>{a.extra_info}</p>
+      </div>}
+      <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap", marginBottom: 16, paddingTop: 12, borderTop: "1px solid var(--line)" }}>
+        {a.price_ars != null && <b className="nop-display" style={{ fontSize: 26, color: "var(--gold)" }}>{fmtARS(a.price_ars)}</b>}
+        {usd != null && <span style={{ color: "var(--grn)", fontWeight: 700, fontSize: 16 }}>{fmtUSD(usd)}</span>}
+        {a.price_ars == null && usd == null && <span className="nop-mini">Precio a consultar</span>}
+      </div>
+
+      {myReq && myReq.status === "validated" ? (
+        <div className="nop-card" style={{ padding: 14, background: "var(--bg2)" }}>
+          <p className="nop-mini" style={{ marginBottom: 10, color: "var(--grn)" }}><Check size={13} style={{ verticalAlign: "-2px" }} /> Compra validada. Datos de acceso:</p>
+          <Cred label="Usuario" value={myReq.granted_user} flash={flash} />
+          <div style={{ height: 8 }} />
+          <Cred label="Contraseña" value={myReq.granted_pass} flash={flash} />
+        </div>
+      ) : myReq && myReq.status === "pending" ? (
+        <div className="nop-card" style={{ padding: 14, background: "var(--bg2)", textAlign: "center" }}>
+          <Clock size={20} style={{ color: "var(--amber)" }} />
+          <p className="nop-mini" style={{ marginTop: 6 }}>Ya enviaste el comprobante. Estamos validando el pago; apenas lo confirmemos se desbloquean el usuario y la contraseña acá.</p>
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button className="nop-btn nop-btn-ghost" style={{ flex: 1, minWidth: 140 }} onClick={consultar}><MessageCircle size={15} />Consultar</button>
+          <button className="nop-btn nop-btn-gold" style={{ flex: 1, minWidth: 140 }} onClick={onAcquire}><Wallet size={15} />Adquirir</button>
+        </div>
+      )}
+    </div>
+  </div></div>;
+}
+
+/* ---- Modal: adquirir (pago + comprobante) ---- */
+function AcquireAccountModal({ a, blue, profile, reload, flash, notify, onClose }) {
+  const [currency, setCurrency] = useState("ars");
+  const [file, setFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const usd = a.price_usd != null ? a.price_usd : (blue && a.price_ars ? Math.round((Number(a.price_ars) / blue) * 100) / 100 : null);
+  const copy = (t) => { try { navigator.clipboard.writeText(t); flash("Copiado: " + t); } catch (e) { flash("Copiá manualmente: " + t); } };
+  const submit = async () => {
+    if (!file) { flash("Subí el comprobante de pago para continuar."); return; }
+    setBusy(true);
     try {
+      const ext = (file.name.split(".").pop() || "dat").toLowerCase();
+      const path = `${profile.id}/account-${a.id}-${Date.now()}.${ext}`;
+      const up = await supabase.storage.from("comprobantes").upload(path, file, { upsert: false });
+      if (up.error) throw up.error;
       const { error } = await supabase.from("account_requests").insert({
         account_id: a.id, account_title: a.summoner, account_rank: a.rank, account_server: a.server,
         account_price_ars: a.price_ars ?? null, account_price_usd: a.price_usd ?? null,
+        currency, receipt_path: path, status: "pending",
         client_id: profile.id, client_name: profile.full_name, client_discord: profile.discord || profile.email,
-        status: "pending",
       });
       if (error) throw error;
-      try { await notify(`🛒 ${profile.full_name} solicitó la cuenta "${a.summoner}".`, "admin", null, "new"); } catch (e) {}
-      setRequested((r) => ({ ...r, [a.id]: true }));
-      flash("¡Solicitud enviada! Te vamos a contactar por Discord.");
-    } catch (e) { flash("No se pudo enviar la solicitud: " + (e.message || e)); } finally { setBusyId(null); }
+      try { await notify(`🛒 ${profile.full_name} quiere adquirir "${a.summoner}" (con comprobante).`, "admin", null, "new"); } catch (e) {}
+      await reload(); flash("¡Comprobante enviado! Validamos el pago y te desbloqueamos la cuenta."); onClose();
+    } catch (e) { flash("No se pudo enviar: " + (e.message || e)); } finally { setBusy(false); }
   };
-
-  return <>
-    <div className="nop-sectionhead"><div><h1 className="nop-h1">Cuentas en venta</h1><p className="nop-sub">Elegí una cuenta y solicitala. Coordinamos pago y entrega por Discord.</p></div></div>
-    {list.length === 0 ? <div className="nop-card"><Empty icon={Gamepad2} title="No hay cuentas disponibles" sub="Pronto vamos a publicar cuentas acá." /></div> :
-      <div className="nop-acc-grid">{list.map((a) => (
-        <AccountSaleCard key={a.id} a={a} blue={blue} showExtra>
-          {requested[a.id]
-            ? <button className="nop-btn nop-btn-grn" disabled style={{ width: "100%" }}><Check size={15} />Solicitada</button>
-            : <button className="nop-btn nop-btn-gold" disabled={busyId === a.id} style={{ width: "100%" }} onClick={() => request(a)}><Send size={15} />{busyId === a.id ? "Enviando…" : "Solicitar"}</button>}
-        </AccountSaleCard>
-      ))}</div>}
-  </>;
+  return <div className="nop-modal" onClick={onClose}><div className="nop-card nop-modalbox" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 520 }}>
+    <div className="hd"><h3>Adquirir · {a.summoner}</h3><button className="nop-iconbtn" onClick={onClose}><X size={16} /></button></div>
+    <div className="bd">
+      <label style={{ fontSize: 12, fontWeight: 600, color: "var(--mut)", display: "block", marginBottom: 10 }}>1 · Elegí la moneda</label>
+      <div className="nop-segwrap" style={{ marginBottom: 18 }}>
+        <button type="button" className={"nop-seg" + (currency === "ars" ? " on" : "")} onClick={() => setCurrency("ars")}>Pesos ARS (transferencia)</button>
+        <button type="button" className={"nop-seg" + (currency === "usd" ? " on" : "")} onClick={() => setCurrency("usd")}>USD (PayPal)</button>
+      </div>
+      {currency === "ars" ? (
+        <div className="nop-card" style={{ padding: 18, background: "var(--bg2)", marginBottom: 18 }}>
+          <div className="nop-panel-h" style={{ marginBottom: 14 }}><Wallet size={15} style={{ color: "var(--gold)" }} />Transferí a este alias</div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
+            <div><div className="nop-mini">Alias</div><b style={{ fontSize: 15 }}>{PAY_ALIAS}</b></div>
+            <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => copy(PAY_ALIAS)}><Copy size={13} />Copiar</button>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "10px 0" }}>
+            <div><div className="nop-mini">Nombre / referencia</div><b style={{ fontSize: 15 }}>{PAY_NAME}</b></div>
+          </div>
+          <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>Monto a transferir</span>
+            <b className="nop-display" style={{ color: "var(--gold)", fontSize: 22, fontWeight: 700 }}>{a.price_ars != null ? fmtARS(a.price_ars) : "a consultar"}</b>
+          </div>
+        </div>
+      ) : (
+        <div className="nop-card" style={{ padding: 18, background: "var(--bg2)", marginBottom: 18 }}>
+          <div className="nop-panel-h" style={{ marginBottom: 12 }}><Wallet size={15} style={{ color: "var(--violet)" }} />Pagá con PayPal</div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>Monto a pagar</span>
+            <b className="nop-display" style={{ color: "var(--violet)", fontSize: 22, fontWeight: 700 }}>{usd != null ? fmtUSD(usd) : "a consultar"}</b>
+          </div>
+          <p className="nop-mini" style={{ marginBottom: 14 }}>Abrí el link, pagá y descargá el comprobante para subirlo abajo.</p>
+          <a className="nop-btn nop-btn-violet" href={PAYPAL_URL} target="_blank" rel="noreferrer"><ArrowRight size={15} />Ir a PayPal</a>
+        </div>
+      )}
+      <label style={{ fontSize: 12, fontWeight: 600, color: "var(--mut)", display: "block", margin: "4px 0 10px" }}>2 · Subí el comprobante <span className="req">*</span></label>
+      <label className="nop-upload">
+        <input type="file" accept="image/*,application/pdf" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+        <Upload size={22} style={{ color: file ? "var(--grn)" : "var(--mut)" }} />
+        <span>{file ? file.name : "Tocá para elegir una imagen o PDF del comprobante"}</span>
+      </label>
+      <button className="nop-btn nop-btn-gold" style={{ width: "100%", marginTop: 16 }} disabled={busy} onClick={submit}>{busy ? "Enviando…" : "Enviar solicitud de compra"}<Send size={15} /></button>
+    </div>
+  </div></div>;
 }
