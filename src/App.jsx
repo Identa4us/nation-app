@@ -138,6 +138,13 @@ function estimateBase(cur, curD, tgt, tgtD) {
 }
 const fmtARS = (n) => "$" + Math.round(n || 0).toLocaleString("es-AR");
 const fmtUSD = (n) => "US$" + (Math.round((n || 0) * 100) / 100).toLocaleString("es-AR");
+// Pedido cobrado en USD (tiene monto USD real cargado)
+const isUsdOrder = (o) => !!o && o.currency === "usd" && o.usd_amount != null;
+// Monto cobrado al cliente respetando la moneda: USD → US$, resto → $ (ARS-equivalente).
+const fmtCharged = (o) => isUsdOrder(o) ? fmtUSD(o.usd_amount) : fmtARS(o.price);
+// Pago FINAL al booster (siempre en pesos). El descuento del cliente NO lo toca:
+// se calcula sobre el precio ARS pre-descuento (price + discount_ars), igual que al asignar/aceptar.
+const previewBoosterPay = (o, cut) => Math.round((Number(o.price || 0) + Number(o.discount_ars || 0)) * Number(cut || 0.5));
 async function openReceipt(path) {
   try {
     const { data } = await supabase.storage.from("comprobantes").createSignedUrl(path, 120);
@@ -875,7 +882,7 @@ function AdminValidate({ orders, profiles, reload, flash, notify }) {
                 <div><b style={{ fontSize: 13 }}>{o.client_name}</b><div className="nop-mini">{o.client_discord} · {o.server} · {o.payment}</div></div>
               </div>
               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
-                <b className="nop-display" style={{ color: "var(--gold)" }}>{fmtARS(o.price)}</b>
+                <b className="nop-display" style={{ color: "var(--gold)" }}>{fmtCharged(o)}</b>
                 <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setExpanded((e) => ({ ...e, [o.id]: !e[o.id] }))}>{expanded[o.id] ? <><ChevronRight size={13} style={{ transform: "rotate(90deg)" }} />Ocultar</> : <><ChevronRight size={13} />Ver detalle</>}</button>
                 <button className="nop-btn nop-btn-cyan nop-btn-sm" onClick={() => viewReceipt(o)} disabled={!o.receipt_path}><FileText size={14} />{o.receipt_path ? "Comprobante" : "Sin comprobante"}</button>
                 <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => validateOrder(o)}><Check size={14} />Validar</button>
@@ -999,7 +1006,7 @@ function ClientDetailModal({ data, onClose, onDelete }) {
         <div style={{ display: "grid", gap: 8 }}>{orders.sort((a, b) => b.id - a.id).map((o) => (
           <div key={o.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid var(--line)" }}>
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}><b style={{ color: "var(--mut)", fontSize: 12 }}>#{o.id}</b><SvcTag s={o.service} /><StatusBadge s={o.status} /></div>
-            <b style={{ fontSize: 13 }}>{fmtARS(o.price)}</b>
+            <b style={{ fontSize: 13 }}>{fmtCharged(o)}</b>
           </div>))}</div>}
       {onDelete && <button className="nop-btn nop-btn-danger" style={{ width: "100%", marginTop: 16 }} onClick={onDelete}><Trash2 size={15} />Eliminar cliente</button>}
     </div>
@@ -1123,7 +1130,7 @@ function AdminDash({ orders, profiles, reload, flash, notify }) {
               <td><RankBadge r={o.cur_rank} d={o.cur_div} /></td>
               <td>{o.service === "coaching" ? <span className="nop-mini">—</span> : <RankBadge r={o.tgt_rank} d={o.tgt_div} />}</td>
               <td className="nop-mini">{o.booster_name || "—"}</td>
-              <td style={{ color: "var(--gold)", fontWeight: 600 }}>{fmtARS(o.price)}</td>
+              <td style={{ color: "var(--gold)", fontWeight: 600 }}>{fmtCharged(o)}</td>
               <td style={{ color: "var(--cyan)" }}>{fmtARS(o.booster_pay)}</td>
               <td style={{ color: "var(--grn)", fontWeight: 600 }}>{fmtARS(o.profit)}</td>
             </tr>))}</tbody>
@@ -1145,7 +1152,7 @@ function AdminDash({ orders, profiles, reload, flash, notify }) {
               <td>
                 <button className="nop-btn nop-btn-gold nop-btn-sm" onClick={() => setAssignFor(o)}><UserCheck size={13} />Asignar</button>
               </td>
-              <td style={{ color: "var(--gold)", fontWeight: 600 }}>{fmtARS(o.price)}</td>
+              <td style={{ color: "var(--gold)", fontWeight: 600 }}>{fmtCharged(o)}</td>
               <td className="nop-mini">{timeAgo(o.created_at)}</td>
             </tr>))}</tbody>
         </table></div>}
@@ -1155,14 +1162,14 @@ function AdminDash({ orders, profiles, reload, flash, notify }) {
       <div className="nop-card nop-modalbox" style={{ maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
         <div className="hd"><h3>Asignar pedido #{assignFor.id}</h3><button className="nop-iconbtn" onClick={() => setAssignFor(null)}><X size={16} /></button></div>
         <div className="bd">
-          <p className="nop-mini" style={{ marginBottom: 14 }}>Cliente: <b style={{ color: "var(--tx)" }}>{assignFor.client_name}</b> · {SERVICES[assignFor.service].label} · {fmtARS(assignFor.price)}</p>
+          <p className="nop-mini" style={{ marginBottom: 14 }}>Cliente: <b style={{ color: "var(--tx)" }}>{assignFor.client_name}</b> · {SERVICES[assignFor.service].label} · {fmtCharged(assignFor)}</p>
           <div className="nop-mini" style={{ marginBottom: 8 }}>Elegí el booster que se hace cargo:</div>
           <div style={{ display: "grid", gap: 8 }}>
             {boosters.length === 0
               ? <div className="nop-mini" style={{ color: "var(--red)" }}>No hay boosters activos disponibles.</div>
               : boosters.map((b) => {
                 const currentLoad = liveActive.filter((o) => o.booster_id === b.id).length;
-                const pay = Math.round(Number(assignFor.price) * Number(b.cut || 0.5));
+                const pay = previewBoosterPay(assignFor, b.cut);
                 return (
                   <button key={b.id} className="nop-card" style={{ padding: 12, display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", background: "var(--bg2)", border: "1px solid var(--line)", textAlign: "left" }} onClick={() => assignBooster(assignFor, b)}>
                     <div>
@@ -1270,6 +1277,9 @@ function NewOrderModal({ profiles, reload, flash, notify, onClose }) {
   const [notes, setNotes] = useState("");
   const [priceManual, setPriceManual] = useState("");
   const [currency, setCurrency] = useState("ars");
+  const [usdManual, setUsdManual] = useState("");          // monto USD que se le cobra al cliente (PayPal)
+  const [blue, setBlue] = useState(null);
+  useEffect(() => { if (currency === "usd" && !blue) fetchBlue().then(setBlue); }, [currency]);
   const [assign, setAssign] = useState("");                // booster_id
   const [payment, setPayment] = useState("Transferencia (pesos)");
   const [placementMode, setPlacementMode] = useState("soloq");
@@ -1325,6 +1335,13 @@ function NewOrderModal({ profiles, reload, flash, notify, onClose }) {
     const boosterProfile = assign ? boosters.find((b) => b.id === assign) : null;
     const status = boosterProfile ? "in_progress" : "available";
     const boosterPay = boosterProfile ? Math.round(Number(finalPrice) * Number(boosterProfile.cut || 0.5)) : null;
+    // Pedido en USD: guardo el monto en dólares (lo que se cobra por PayPal).
+    // Si no lo cargaron a mano, lo estimo con el dólar blue a partir del precio ARS.
+    let usdAmt = null, fxRate = null;
+    if (currency === "usd") {
+      usdAmt = usdManual ? Number(usdManual) : (blue ? Math.round((Number(finalPrice) / blue) * 100) / 100 : null);
+      fxRate = blue || null;
+    }
 
     const row = {
       client_id: cliId, client_name: cliName, client_discord: cliDiscord,
@@ -1340,7 +1357,7 @@ function NewOrderModal({ profiles, reload, flash, notify, onClose }) {
       payment, price: finalPrice, status,
       receipt_path: null,
       summoner: summoner || null,
-      currency, usd_amount: null, fx_rate: null,
+      currency, usd_amount: usdAmt, fx_rate: fxRate,
       booster_id: boosterProfile?.id || null,
       booster_pay: boosterPay,
     };
@@ -1463,7 +1480,7 @@ function NewOrderModal({ profiles, reload, flash, notify, onClose }) {
 
       {/* Precio */}
       <div className="nop-row2">
-        <div className="nop-field"><label>Precio (sugerido: {fmtARS(priceAuto)})</label>
+        <div className="nop-field"><label>{currency === "usd" ? "Precio en ARS (equiv. · pago booster)" : "Precio"} (sugerido: {fmtARS(priceAuto)})</label>
           <input className="nop-input" type="number" value={priceManual} onChange={(e) => setPriceManual(e.target.value)} placeholder={String(priceAuto)} /></div>
         <div className="nop-field"><label>Moneda / Pago</label>
           <select className="nop-select" value={payment} onChange={(e) => { setPayment(e.target.value); setCurrency(e.target.value.includes("PayPal") ? "usd" : "ars"); }}>
@@ -1472,6 +1489,12 @@ function NewOrderModal({ profiles, reload, flash, notify, onClose }) {
             <option>Otro</option>
           </select></div>
       </div>
+      {currency === "usd" && (
+        <div className="nop-field"><label>Monto cobrado en USD {blue ? `(sugerido: ${fmtUSD(Math.round((Number(finalPrice) / blue) * 100) / 100)})` : ""}</label>
+          <input className="nop-input" type="number" step="0.01" value={usdManual} onChange={(e) => setUsdManual(e.target.value)} placeholder={blue ? String(Math.round((Number(finalPrice) / blue) * 100) / 100) : "USD"} />
+          <div className="nop-mini" style={{ marginTop: 6 }}>Lo que cobrás por PayPal. Si lo dejás vacío, se estima con el dólar blue{blue ? ` (${fmtARS(blue)})` : ""}. El pago al booster sale del precio en ARS.</div>
+        </div>
+      )}
 
       {/* Asignación */}
       <div className="nop-field"><label>Asignar a booster (opcional)</label>
@@ -1880,7 +1903,7 @@ function cell(c, o) {
     case "rank": return <RankPath o={o} />;
     case "servicio": return <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}><SvcTag s={o.service} /><ExtrasTags o={o} /></div>;
     case "booster": return o.booster_name || <span className="nop-mini">Sin asignar</span>;
-    case "precio": return <b>{fmtARS(o.price)}</b>;
+    case "precio": return <b>{fmtCharged(o)}</b>;
     case "pago": return <span style={{ color: "var(--cyan)" }}>{fmtARS(o.booster_pay)}</span>;
     case "ganancia": return <span style={{ color: "var(--grn)" }}>{fmtARS(o.profit)}</span>;
     case "estado": return <StatusBadge s={o.status} />;
@@ -2002,7 +2025,7 @@ function OrderModal({ o, onClose, onDelete, hideProfit, onEdited }) {
       {o.status === "completed" && <F k="Pago al booster" v={<span style={{ color: o.booster_paid ? "var(--grn)" : "var(--amber)", fontWeight: 700 }}>{o.booster_paid ? "Pago realizado ✓" : "Pago pendiente"}</span>} />}
       {o.status === "completed" && o.booster_receipt_path && <button className="nop-btn nop-btn-ghost" style={{ width: "100%", margin: "8px 0 0" }} onClick={() => openReceipt(o.booster_receipt_path)}><Eye size={15} />Ver comprobante de pago</button>}
       <div style={{ display: "grid", gridTemplateColumns: hideProfit ? "1fr" : "1fr 1fr 1fr", gap: 10, margin: "14px 0", textAlign: "center" }}>
-        {!hideProfit && <S k="Precio" v={fmtARS(o.price)} c="var(--gold)" />}<S k="Pago booster" v={fmtARS(o.booster_pay)} c="var(--cyan)" />
+        {!hideProfit && <S k="Precio" v={fmtCharged(o)} c="var(--gold)" />}<S k="Pago booster" v={fmtARS(o.booster_pay)} c="var(--cyan)" />
         {!hideProfit && <S k="Ganancia" v={fmtARS(o.profit)} c="var(--grn)" />}
       </div>
       {o.survey_rating && <div className="nop-card" style={{ padding: 14, background: "var(--bg2)" }}>
@@ -2406,7 +2429,7 @@ function BoosterBoard({ profile, orders, reload, flash, notify }) {
             {o.pref_times && <span><Clock size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />{o.pref_times}</span>}</div>}
           {o.notes && <p className="nop-mini" style={{ fontStyle: "italic" }}>"{o.notes}"</p>}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "auto", paddingTop: 8, borderTop: "1px solid var(--line)" }}>
-            <div><div className="nop-mini">Tu pago ({Math.round(profile.cut * 100)}%)</div><div className="nop-display" style={{ fontSize: 18, fontWeight: 700, color: "var(--gold)" }}>{fmtARS(o.price * profile.cut)}</div></div>
+            <div><div className="nop-mini">Tu pago ({Math.round(profile.cut * 100)}%)</div><div className="nop-display" style={{ fontSize: 18, fontWeight: 700, color: "var(--gold)" }}>{fmtARS(previewBoosterPay(o, profile.cut))}</div></div>
             <button className="nop-btn nop-btn-grn" onClick={() => accept(o)}><Check size={15} />Aceptar</button>
           </div>
         </div>))}</div>}
