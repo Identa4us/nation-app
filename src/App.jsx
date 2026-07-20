@@ -28,7 +28,11 @@ const SERVICES = {
 const SERVICES_LEGACY = {
   combo: { label: "DuoBoost + Coaching", icon: Sparkles, color: "#E8B349", desc: "Servicio histórico." },
 };
-const svcOf = (k) => SERVICES[k] || SERVICES_LEGACY[k] || SERVICES.duoboost;
+// Servicio de solo-visualización: ventas de cuentas (no es reservable desde el formulario)
+const SERVICES_EXTRA = {
+  cuenta: { label: "Cuenta", icon: Gamepad2, color: "#2DD4BF", desc: "Venta de cuenta de LoL." },
+};
+const svcOf = (k) => SERVICES[k] || SERVICES_LEGACY[k] || SERVICES_EXTRA[k] || SERVICES.duoboost;
 const DISCORD_INVITE = "https://discord.gg/AfmjdnbNgC";
 const STATUS_FLOW = ["pending", "available", "in_progress", "completed"];
 const STATUS_LABEL = { pending: "En revisión", available: "Disponible", in_progress: "En proceso", completed: "Finalizado", cancelled: "Cancelado" };
@@ -187,6 +191,7 @@ function RankPath({ o }) {
       {r}{r !== "Master" ? " " + d : ""}
     </span>
   );
+  if (o.service === "cuenta" || (!o.cur_rank && !o.tgt_rank)) return <span className="nop-mini">—</span>;
   if (o.service === "coaching") return <span className="nop-rankpath">{pill(o.cur_rank, o.cur_div)}</span>;
   return <span className="nop-rankpath">{pill(o.cur_rank, o.cur_div)}<ArrowRight size={13} style={{ color: "var(--mut2)" }} />{pill(o.tgt_rank, o.tgt_div)}</span>;
 }
@@ -833,8 +838,26 @@ function AdminValidate({ orders, profiles, accountRequests, reload, flash, notif
     await supabase.from("account_requests").update({ status: "validated", granted_user: gu, granted_pass: gp, validated_at: new Date().toISOString() }).eq("id", r.id);
     // marcar la cuenta como vendida (sale del catálogo)
     if (r.account_id != null) await supabase.from("game_accounts").update({ status: "deshabilitada" }).eq("id", r.account_id);
+    // registrar la venta como pedido (aparece en la pestaña Pedidos y en Contable)
+    let ordWarn = "";
+    try {
+      const { error: ordErr } = await supabase.from("orders").insert({
+        client_id: r.client_id || null, client_name: r.client_name || "—", client_discord: r.client_discord || null,
+        service: "cuenta", server: r.account_server || null,
+        role_champ: r.account_title || "Cuenta",
+        notes: `Venta de cuenta: ${r.account_title || ""}`.trim(),
+        price: Number(r.account_price_ars || 0),
+        currency: r.currency || "ars",
+        usd_amount: r.currency === "usd" ? (r.account_price_usd ?? null) : null,
+        status: "completed", summoner: r.account_title || null,
+        booster_id: null, booster_pay: 0, profit: Number(r.account_price_ars || 0),
+        receipt_path: r.receipt_path || null,
+        completed_at: new Date().toISOString(),
+      });
+      if (ordErr) ordWarn = " (no se registró en Pedidos: " + ordErr.message + ")";
+    } catch (e) { ordWarn = " (no se registró en Pedidos)"; }
     if (r.client_id) { try { await notify(`✅ Tu compra de "${r.account_title}" fue validada. Ya tenés el usuario y la contraseña en la pestaña Cuentas.`, null, r.client_id, "done"); } catch (e) {} }
-    await reload(); flash("Compra validada · credenciales desbloqueadas");
+    await reload(); flash("Compra validada · credenciales desbloqueadas" + ordWarn);
   };
   const rejectReq = async (r) => {
     if (!window.confirm(`¿Rechazar la compra de "${r.account_title}" de ${r.client_name}?`)) return;
@@ -1310,6 +1333,7 @@ function AdminOrders({ orders, profiles, reload, flash, deleteOrder, notify }) {
         <select className="nop-select" style={{ width: "auto", minWidth: 130 }} value={fService} onChange={(e) => setFService(e.target.value)}>
           <option value="todos">Servicio: Todos</option>
           {Object.keys(SERVICES).map((k) => <option key={k} value={k}>{SERVICES[k].label}</option>)}
+          <option value="cuenta">Cuentas</option>
         </select>
         <select className="nop-select" style={{ width: "auto", minWidth: 120 }} value={fServer} onChange={(e) => setFServer(e.target.value)}>
           <option value="todos">Servidor: Todos</option>
