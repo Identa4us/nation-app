@@ -1074,13 +1074,11 @@ function AdminClients({ profiles, orders, deleteUser }) {
     <div className="nop-card nop-panel">
       {clients.length === 0 ? <Empty icon={Users} title="Sin clientes todavía" sub="Cuando alguien se registre como cliente, aparece acá." /> :
         <div className="nop-tablewrap"><table className="nop-t">
-          <thead><tr><th>Cliente</th><th>Email</th><th>Teléfono</th><th>Discord</th><th>Registrado</th><th>Activos</th><th>En espera</th><th>Completados</th><th>Gastado</th><th></th></tr></thead>
+          <thead><tr><th>Cliente</th><th>Email</th><th>Registrado</th><th>Activos</th><th>En espera</th><th>Completados</th><th>Gastado</th><th></th></tr></thead>
           <tbody>{clients.map((c) => { const s = statsOf(c.id); return (
             <tr key={c.id} style={{ cursor: "pointer" }} onClick={() => setOpen({ c, s, orders: orders.filter((o) => o.client_id === c.id) })}>
               <td><div style={{ display: "flex", alignItems: "center", gap: 9 }}><span className="nop-avatar" style={{ background: "var(--violet)" }}>{(c.full_name || "?")[0]?.toUpperCase()}</span><b>{c.full_name || "—"}</b></div></td>
               <td className="nop-mini">{c.email}</td>
-              <td className="nop-mini">{c.phone || "—"}</td>
-              <td className="nop-mini">{c.discord || "—"}</td>
               <td className="nop-mini">{fmtDay(c.created_at)}</td>
               <td><span style={{ color: "var(--violet)", fontWeight: 600 }}>{s.activos}</span></td>
               <td><span style={{ color: "var(--amber)", fontWeight: 600 }}>{s.espera}</span></td>
@@ -2330,7 +2328,7 @@ function AdminFinance({ orders, profiles, flash, reload }) {
     <div className="nop-sectionhead">
       <div><h1 className="nop-h1">Gestión contable</h1>
         <p className="nop-sub" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>Dólar blue: <b style={{ color: "var(--grn)" }}>{blue ? fmtARS(blue) : "…"}</b>
-          <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => fetchBlue().then(setBlue)}><RefreshCw size={12} />Actualizar</button></p></div>
+          <button className="nop-linkbtn" style={{ display: "inline-flex", alignItems: "center", gap: 4, font: "inherit" }} onClick={() => fetchBlue().then(setBlue)}><RefreshCw size={12} />actualizar</button></p></div>
       <select className="nop-select" style={{ width: "auto", minWidth: 170 }} value={month} onChange={(e) => setMonth(e.target.value)}>
         {months.map((k) => <option key={k} value={k}>{mLabel(k)}</option>)}
       </select>
