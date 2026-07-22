@@ -176,6 +176,14 @@ function svcDuration(o) {
   const days = Math.max(1, Math.round((new Date(end) - new Date(start)) / 86400000));
   return days === 1 ? "1 día" : `${days} días`;
 }
+// Duración desde que el booster tomó el servicio (accepted_at) hasta que finalizó (o "en curso")
+function svcDurationLive(o) {
+  if (!o.accepted_at) return "";
+  const end = o.completed_at ? new Date(o.completed_at) : new Date();
+  const days = Math.max(1, Math.round((end - new Date(o.accepted_at)) / 86400000));
+  const label = days === 1 ? "1 día" : `${days} días`;
+  return o.completed_at ? label : label + " en curso";
+}
 function timeAgo(t) {
   const s = Math.floor((Date.now() - new Date(t).getTime()) / 1000);
   if (s < 60) return "hace instantes";
@@ -183,6 +191,7 @@ function timeAgo(t) {
   if (s < 86400) return `hace ${Math.floor(s / 3600)} h`;
   return `hace ${Math.floor(s / 86400)} d`;
 }
+const fmtDay = (d) => d ? new Date(d).toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric" }) : "—";
 
 /* ===================== UI atoms ===================== */
 function RankPath({ o }) {
@@ -469,7 +478,7 @@ export default function App() {
 
       {drawer && <Drawer notifs={visibleNotifs} lastSeen={lastSeen} onClose={closeDrawer} onClick={handleNotif} onMarkAll={markSeen} />}
       {showProfile && <ProfileModal profile={profile} onClose={() => setShowProfile(false)} flash={flash} reload={reload} />}
-      {focusOrder && <OrderModal o={focusOrder} onClose={() => setFocusOrder(null)} onDelete={profile.role === "admin" ? deleteOrder : null} />}
+      {focusOrder && <OrderModal o={focusOrder} onClose={() => setFocusOrder(null)} onDelete={profile.role === "admin" ? deleteOrder : null} flash={flash} />}
       {toast && <div className="nop-toast"><Check size={16} style={{ color: "var(--grn)" }} />{toast}</div>}
     </>
   );
@@ -659,8 +668,8 @@ function Auth() {
         {ok && <div className="nop-ok">{ok}</div>}
 
         {mode === "signup" && <>
-          <div className="nop-field"><label>Nombre o nick <span className="req">*</span></label>
-            <input className="nop-input" value={fullName} onChange={(e) => setName(e.target.value)} placeholder="Ej: Alkioz" /></div>
+          <div className="nop-field"><label>{boosterSignup ? "Nombre o nick" : "Nombre de invocador"} <span className="req">*</span></label>
+            <input className="nop-input" value={fullName} onChange={(e) => setName(e.target.value)} placeholder={boosterSignup ? "Ej: Alkioz" : "Tu nombre de invocador en LoL"} /></div>
           <div className="nop-row2">
             <div className="nop-field"><label>Teléfono <span className="req">*</span></label>
               <input className="nop-input" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Ej: +54 9 221 428 7466" /></div>
@@ -1055,7 +1064,7 @@ function AdminClients({ profiles, orders, deleteUser }) {
   };
   return <>
     <div className="nop-sectionhead"><div><h1 className="nop-h1">Clientes</h1>
-      <p className="nop-sub">Usuarios registrados y su actividad. Tocá una fila para ver el detalle.</p></div></div>
+      <p className="nop-sub">Usuarios registrados y su actividad. Tocá una fila para ver el detalle. · <b style={{ color: "var(--tx)" }}>{profiles.filter((p) => p.role === "cliente").length} clientes registrados</b></p></div></div>
     <div className="nop-card nop-panel" style={{ marginBottom: 14 }}>
       <div style={{ position: "relative", maxWidth: 320 }}>
         <Search size={15} style={{ position: "absolute", left: 12, top: 12, color: "var(--mut2)" }} />
@@ -1065,13 +1074,14 @@ function AdminClients({ profiles, orders, deleteUser }) {
     <div className="nop-card nop-panel">
       {clients.length === 0 ? <Empty icon={Users} title="Sin clientes todavía" sub="Cuando alguien se registre como cliente, aparece acá." /> :
         <div className="nop-tablewrap"><table className="nop-t">
-          <thead><tr><th>Cliente</th><th>Email</th><th>Teléfono</th><th>Discord</th><th>Activos</th><th>En espera</th><th>Completados</th><th>Gastado</th><th></th></tr></thead>
+          <thead><tr><th>Cliente</th><th>Email</th><th>Teléfono</th><th>Discord</th><th>Registrado</th><th>Activos</th><th>En espera</th><th>Completados</th><th>Gastado</th><th></th></tr></thead>
           <tbody>{clients.map((c) => { const s = statsOf(c.id); return (
             <tr key={c.id} style={{ cursor: "pointer" }} onClick={() => setOpen({ c, s, orders: orders.filter((o) => o.client_id === c.id) })}>
               <td><div style={{ display: "flex", alignItems: "center", gap: 9 }}><span className="nop-avatar" style={{ background: "var(--violet)" }}>{(c.full_name || "?")[0]?.toUpperCase()}</span><b>{c.full_name || "—"}</b></div></td>
               <td className="nop-mini">{c.email}</td>
               <td className="nop-mini">{c.phone || "—"}</td>
               <td className="nop-mini">{c.discord || "—"}</td>
+              <td className="nop-mini">{fmtDay(c.created_at)}</td>
               <td><span style={{ color: "var(--violet)", fontWeight: 600 }}>{s.activos}</span></td>
               <td><span style={{ color: "var(--amber)", fontWeight: 600 }}>{s.espera}</span></td>
               <td><span style={{ color: "var(--grn)", fontWeight: 600 }}>{s.completados}</span></td>
@@ -1093,6 +1103,7 @@ function ClientDetailModal({ data, onClose, onDelete }) {
       <div style={{ display: "flex", justifyContent: "space-between", padding: "9px 0", borderBottom: "1px solid var(--line)" }}><span className="nop-mini">Email</span><span style={{ fontSize: 13 }}>{c.email}</span></div>
       <div style={{ display: "flex", justifyContent: "space-between", padding: "9px 0", borderBottom: "1px solid var(--line)" }}><span className="nop-mini">Teléfono</span><span style={{ fontSize: 13 }}>{c.phone || "—"}</span></div>
       <div style={{ display: "flex", justifyContent: "space-between", padding: "9px 0", borderBottom: "1px solid var(--line)" }}><span className="nop-mini">Discord</span><span style={{ fontSize: 13 }}>{c.discord || "—"}</span></div>
+      <div style={{ display: "flex", justifyContent: "space-between", padding: "9px 0", borderBottom: "1px solid var(--line)" }}><span className="nop-mini">Registrado</span><span style={{ fontSize: 13 }}>{fmtDay(c.created_at)}</span></div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, margin: "14px 0", textAlign: "center" }}>
         <div className="nop-card" style={{ padding: "12px 8px", background: "var(--bg2)" }}><div className="nop-mini">Activos</div><div className="nop-display" style={{ fontSize: 18, fontWeight: 700, color: "var(--violet)", marginTop: 4 }}>{s.activos}</div></div>
         <div className="nop-card" style={{ padding: "12px 8px", background: "var(--bg2)" }}><div className="nop-mini">En espera</div><div className="nop-display" style={{ fontSize: 18, fontWeight: 700, color: "var(--amber)", marginTop: 4 }}>{s.espera}</div></div>
@@ -1110,9 +1121,10 @@ function ClientDetailModal({ data, onClose, onDelete }) {
   </div></div>;
 }
 
-function AdminDash({ orders, profiles, reload, flash, notify }) {
+function AdminDash({ orders, profiles, reload, flash, notify, deleteOrder }) {
   const [month, setMonth] = useState("all");
   const [assignFor, setAssignFor] = useState(null); // orden a la que le vamos a asignar booster
+  const [detail, setDetail] = useState(null); // orden abierta en detalle
 
   const monthKey = (d) => { if (!d) return null; const x = new Date(d); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0"); };
   const monthLabel = (k) => { const [y, m] = k.split("-"); return new Date(y, m - 1, 1).toLocaleDateString("es-AR", { month: "long", year: "numeric" }); };
@@ -1220,7 +1232,7 @@ function AdminDash({ orders, profiles, reload, flash, notify }) {
         <div className="nop-tablewrap"><table className="nop-t">
           <thead><tr><th>#</th><th>Cliente</th><th>Servicio</th><th>Liga actual</th><th>Objetivo</th><th>Booster</th><th>Monto</th><th>Pago booster</th><th>Ganancia</th></tr></thead>
           <tbody>{liveActive.map((o) => (
-            <tr key={o.id}>
+            <tr key={o.id} style={{ cursor: "pointer" }} onClick={() => setDetail(o)}>
               <td className="nop-mini">#{o.id}</td>
               <td><b style={{ fontSize: 13 }}>{o.client_name}</b></td>
               <td><SvcTag s={o.service} /></td>
@@ -1240,13 +1252,13 @@ function AdminDash({ orders, profiles, reload, flash, notify }) {
         <div className="nop-tablewrap"><table className="nop-t">
           <thead><tr><th>#</th><th>Cliente</th><th>Servicio</th><th>Liga actual</th><th>Objetivo</th><th>Booster</th><th>Monto</th><th>Espera</th></tr></thead>
           <tbody>{liveQueue.map((o) => (
-            <tr key={o.id}>
+            <tr key={o.id} style={{ cursor: "pointer" }} onClick={() => setDetail(o)}>
               <td className="nop-mini">#{o.id}</td>
               <td><b style={{ fontSize: 13 }}>{o.client_name}</b></td>
               <td><SvcTag s={o.service} /></td>
               <td><RankBadge r={o.cur_rank} d={o.cur_div} /></td>
               <td>{o.service === "coaching" ? <span className="nop-mini">—</span> : <RankBadge r={o.tgt_rank} d={o.tgt_div} />}</td>
-              <td>
+              <td onClick={(e) => e.stopPropagation()}>
                 <button className="nop-btn nop-btn-gold nop-btn-sm" onClick={() => setAssignFor(o)}><UserCheck size={13} />Asignar</button>
               </td>
               <td style={{ color: "var(--gold)", fontWeight: 600 }}>{fmtCharged(o)}</td>
@@ -1284,6 +1296,7 @@ function AdminDash({ orders, profiles, reload, flash, notify }) {
         </div>
       </div>
     </div>}
+    {detail && <OrderModal o={detail} onClose={() => setDetail(null)} onDelete={deleteOrder} onEdited={reload} flash={flash} />}
   </>;
 }
 function AdminOrders({ orders, profiles, reload, flash, deleteOrder, notify }) {
@@ -1352,7 +1365,7 @@ function AdminOrders({ orders, profiles, reload, flash, deleteOrder, notify }) {
     </div>
     <div className="nop-card nop-panel">
       {list.length === 0 ? <Empty icon={Hash} title="Sin resultados" sub="Probá con otro filtro." />
-        : <OrdersTable orders={list} onDelete={deleteOrder} onEdited={reload} cols={["id", "cliente", "rank", "servicio", "booster", "precio", "pago", "ganancia", "estado"]} />}
+        : <OrdersTable orders={list} onDelete={deleteOrder} onEdited={reload} flash={flash} cols={["id", "cliente", "rank", "servicio", "booster", "precio", "pago", "ganancia", "estado"]} />}
     </div>
     {showImport && <BulkImportModal profiles={profiles || []} reload={reload} flash={flash} onClose={() => setShowImport(false)} />}
     {showReports && <ReportsModal orders={orders} flash={flash} onClose={() => setShowReports(false)} />}
@@ -1857,7 +1870,7 @@ function AdminBoosters({ orders, profiles, reload, flash, deleteUser, editUserAu
   const statusColor = (s) => s === "active" ? "s-completed" : s === "interrupted" ? "s-pending" : s === "pending" ? "s-pending" : "s-cancelled";
 
   return <>
-    <div className="nop-sectionhead"><div><h1 className="nop-h1">Boosters</h1><p className="nop-sub">Equipo, cortes, estado y desempeño. Las altas se aprueban desde Validaciones.</p></div></div>
+    <div className="nop-sectionhead"><div><h1 className="nop-h1">Boosters</h1><p className="nop-sub">Equipo, cortes, estado y desempeño. Las altas se aprueban desde Validaciones. · <b style={{ color: "var(--tx)" }}>{boosters.length} boosters registrados</b></p></div></div>
     <div className="nop-card nop-panel"><div className="nop-tablewrap"><table className="nop-t">
       <thead><tr><th>Booster</th><th>Estado</th><th>Corte</th><th>Activos</th><th>Hechos</th><th>Pagado</th><th>★</th><th>Acción</th></tr></thead>
       <tbody>{boosters.map((b) => {
@@ -1866,7 +1879,7 @@ function AdminBoosters({ orders, profiles, reload, flash, deleteUser, editUserAu
         const rs = done.filter((o) => o.survey_rating).map((o) => o.survey_rating);
         const avg = rs.length ? (rs.reduce((a, c) => a + c, 0) / rs.length).toFixed(1) : "—";
         return <tr key={b.id}>
-          <td><div style={{ display: "flex", alignItems: "center", gap: 9 }}><span className="nop-avatar" style={{ background: "var(--cyan)" }}>{(b.full_name || "?")[0]}</span><div><b>{b.full_name || "—"}</b><div className="nop-mini">{b.email}</div></div></div></td>
+          <td><div style={{ display: "flex", alignItems: "center", gap: 9 }}><span className="nop-avatar" style={{ background: "var(--cyan)" }}>{(b.full_name || "?")[0]}</span><div><b>{b.full_name || "—"}</b><div className="nop-mini">{b.email}</div><div className="nop-mini" style={{ color: "var(--mut2)" }}>Alta: {fmtDay(b.created_at)}</div></div></div></td>
           <td>
             <select className="nop-select" style={{ width: 130, padding: "6px 8px", fontSize: 12, borderColor: b.status === "active" ? "var(--grn)" : b.status === "interrupted" ? "var(--amber)" : b.status === "disabled" ? "var(--red)" : "var(--line)" }} value={b.status || "pending"} onChange={(e) => setStatus(b, e.target.value)}>
               <option value="active">✅ Habilitado</option>
@@ -1959,19 +1972,19 @@ function EditAuthModal({ user, onClose, onSave }) {
   </div></div>;
 }
 
-function AdminHistory({ orders, deleteOrder }) {
+function AdminHistory({ orders, deleteOrder, flash }) {
   const done = orders.filter((o) => o.status === "completed");
   return <>
     <div className="nop-sectionhead"><div><h1 className="nop-h1">Historial</h1><p className="nop-sub">Servicios finalizados y reseñas.</p></div></div>
     <div className="nop-card nop-panel">
       {done.length === 0 ? <Empty icon={Trophy} title="Todavía no hay cierres" sub="Aparecen acá cuando un booster finaliza." />
-        : <OrdersTable orders={done} onDelete={deleteOrder} cols={["id", "cliente", "rank", "servicio", "booster", "precio", "ganancia", "rating"]} />}
+        : <OrdersTable orders={done} onDelete={deleteOrder} flash={flash} cols={["id", "cliente", "rank", "servicio", "booster", "precio", "ganancia", "rating"]} />}
     </div>
   </>;
 }
 
 /* ===== tabla compartida ===== */
-function OrdersTable({ orders, cols, onDelete, hideProfit, onEdited }) {
+function OrdersTable({ orders, cols, onDelete, hideProfit, onEdited, flash }) {
   const [open, setOpen] = useState(null);
   const head = { id: "#", cliente: "Cliente", rank: "Recorrido", servicio: "Servicio", booster: "Booster", precio: "Precio", pago: "Pago booster", ganancia: "Ganancia", estado: "Estado", rating: "Reseña" };
   return <>
@@ -1979,7 +1992,7 @@ function OrdersTable({ orders, cols, onDelete, hideProfit, onEdited }) {
       <thead><tr>{cols.map((c) => <th key={c}>{head[c]}</th>)}</tr></thead>
       <tbody>{orders.map((o) => <tr key={o.id} style={{ cursor: "pointer" }} onClick={() => setOpen(o)}>{cols.map((c) => <td key={c}>{cell(c, o)}</td>)}</tr>)}</tbody>
     </table></div>
-    {open && <OrderModal o={open} onClose={() => setOpen(null)} onDelete={onDelete} hideProfit={hideProfit} onEdited={onEdited} />}
+    {open && <OrderModal o={open} onClose={() => setOpen(null)} onDelete={onDelete} hideProfit={hideProfit} onEdited={onEdited} flash={flash} />}
   </>;
 }
 function ExtrasTags({ o }) {
@@ -2021,7 +2034,8 @@ function cleanRoleDetail(s) {
     .replace(/\s{2,}/g, " ")
     .trim();
 }
-function OrderModal({ o, onClose, onDelete, hideProfit, onEdited }) {
+function OrderModal({ o, onClose, onDelete, hideProfit, onEdited, flash }) {
+  const say = flash || (() => {});
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [f, setF2] = useState({
@@ -2031,6 +2045,7 @@ function OrderModal({ o, onClose, onDelete, hideProfit, onEdited }) {
     tgt_rank: o.tgt_rank || "Platino", tgt_div: o.tgt_div || "IV",
     price: o.price || 0, notes: o.notes || "", role_champ: o.role_champ || "",
     pref_days: o.pref_days || "", pref_times: o.pref_times || "",
+    acct_user: o.acct_user || "", acct_pass: o.acct_pass || "",
   });
   const upd = (k, v) => setF2((s) => ({ ...s, [k]: v }));
   const saveEdit = async () => {
@@ -2041,6 +2056,7 @@ function OrderModal({ o, onClose, onDelete, hideProfit, onEdited }) {
       tgt_rank: f.tgt_rank, tgt_div: f.tgt_div, price: Number(f.price) || 0,
       notes: f.notes || null, role_champ: f.role_champ || null,
       pref_days: f.pref_days || null, pref_times: f.pref_times || null,
+      acct_user: f.acct_user || null, acct_pass: f.acct_pass || null,
     };
     // recalcular profit si hay booster
     if (o.booster_pay != null) patch.profit = (Number(f.price) || 0) - Number(o.booster_pay || 0);
@@ -2076,6 +2092,10 @@ function OrderModal({ o, onClose, onDelete, hideProfit, onEdited }) {
             <select className="nop-select" value={f.tgt_div} onChange={(e) => upd("tgt_div", e.target.value)} disabled={f.tgt_rank === "Master"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select></div></div>}
         </div>
         <div className="nop-field"><label>Precio (ARS)</label><input className="nop-input" type="number" value={f.price} onChange={(e) => upd("price", e.target.value)} /></div>
+        {o.service === "eloboost" && <div className="nop-row2">
+          <div className="nop-field"><label>Usuario de la cuenta</label><input className="nop-input" value={f.acct_user} onChange={(e) => upd("acct_user", e.target.value)} placeholder="usuario de login" /></div>
+          <div className="nop-field"><label>Contraseña de la cuenta</label><input className="nop-input" value={f.acct_pass} onChange={(e) => upd("acct_pass", e.target.value)} placeholder="contraseña" /></div>
+        </div>}
         <div className="nop-field"><label>Rol / detalle</label><input className="nop-input" value={f.role_champ} onChange={(e) => upd("role_champ", e.target.value)} /></div>
         <div className="nop-row2">
           <div className="nop-field"><label>Días</label><input className="nop-input" value={f.pref_days} onChange={(e) => upd("pref_days", e.target.value)} /></div>
@@ -2090,7 +2110,13 @@ function OrderModal({ o, onClose, onDelete, hideProfit, onEdited }) {
   }
 
   return <div className="nop-modal" onClick={onClose}><div className="nop-card nop-modalbox" onClick={(e) => e.stopPropagation()}>
-    <div className="hd"><h3>Pedido #{o.id}</h3><button className="nop-iconbtn" onClick={onClose}><X size={16} /></button></div>
+    <div className="hd">
+      <div>
+        <h3 style={{ margin: 0 }}>Pedido #{o.id}</h3>
+        <div className="nop-mini" style={{ marginTop: 3 }}>{o.created_at ? new Date(o.created_at).toLocaleDateString("es-AR", { day: "2-digit", month: "short", year: "numeric" }) : "—"}{svcDurationLive(o) ? ` (${svcDurationLive(o)})` : ""}</div>
+      </div>
+      <button className="nop-iconbtn" onClick={onClose}><X size={16} /></button>
+    </div>
     <div className="bd">
       <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}><SvcTag s={o.service} /><StatusBadge s={o.status} /><ExtrasTags o={o} />
         {onEdited && <button className="nop-btn nop-btn-ghost nop-btn-sm" style={{ marginLeft: "auto" }} onClick={() => setEditing(true)}><Settings size={13} />Editar</button>}
@@ -2100,6 +2126,13 @@ function OrderModal({ o, onClose, onDelete, hideProfit, onEdited }) {
       {o.summoner && <F k="Invocador" v={<span>{o.summoner}{opggUrl(o.summoner, o.server) && <> · <a href={opggUrl(o.summoner, o.server)} target="_blank" rel="noreferrer" style={{ color: "var(--cyan)" }}>ver en op.gg</a></>}</span>} />}
       <F k="Recorrido" v={<RankPath o={o} />} />
       <F k="Servidor / LP" v={`${o.server} · ${o.lp || "—"}`} />
+      {!hideProfit && o.service === "eloboost" && (o.acct_user || o.acct_pass) && <div className="nop-card" style={{ padding: 12, background: "var(--bg2)", margin: "10px 0" }}>
+        <div className="nop-panel-h" style={{ marginBottom: 10 }}>🔑 Credenciales de la cuenta</div>
+        <Cred label="Usuario" value={o.acct_user} flash={say} />
+        <div style={{ height: 8 }} />
+        <Cred label="Contraseña" value={o.acct_pass} flash={say} />
+        {onEdited && <p className="nop-mini" style={{ marginTop: 8 }}>Podés modificarlas con el botón «Editar».</p>}
+      </div>}
       {["eloboost", "duoboost", "tft"].includes(o.service) && o.status === "in_progress" && (() => {
         const pct = progressPct(o);
         const prLabel = o.progress_rank ? `${o.progress_rank}${o.progress_rank !== "Master" ? " " + (o.progress_div || "") : ""}` : "sin actualizar";
@@ -2119,11 +2152,12 @@ function OrderModal({ o, onClose, onDelete, hideProfit, onEdited }) {
       {o.notes && <F k="Notas del cliente" v={o.notes} />}
       <F k="Booster" v={o.booster_name || "Sin asignar"} />
       <F k="Medio de pago" v={o.payment} />
+      {(o.discount_ars > 0 || o.discount_usd > 0 || o.promo_code_text) && <F k="Descuento aplicado" v={<span style={{ color: "var(--grn)" }}>{o.promo_code_text ? o.promo_code_text + " · " : ""}−{o.currency === "usd" && o.discount_usd ? fmtUSD(o.discount_usd) : fmtARS(o.discount_ars || 0)}</span>} />}
       {o.status === "completed" && <F k="Duración del servicio" v={svcDuration(o)} />}
       {o.status === "completed" && <F k="Pago al booster" v={<span style={{ color: o.booster_paid ? "var(--grn)" : "var(--amber)", fontWeight: 700 }}>{o.booster_paid ? "Pago realizado ✓" : "Pago pendiente"}</span>} />}
-      {o.status === "completed" && o.booster_receipt_path && <button className="nop-btn nop-btn-ghost" style={{ width: "100%", margin: "8px 0 0" }} onClick={() => openReceipt(o.booster_receipt_path)}><Eye size={15} />Ver comprobante de pago</button>}
+      {o.receipt_path && <button className="nop-btn nop-btn-ghost" style={{ width: "100%", margin: "8px 0 0" }} onClick={() => openReceipt(o.receipt_path)}><Eye size={15} />Ver comprobante del cliente</button>}
       <div style={{ display: "grid", gridTemplateColumns: hideProfit ? "1fr" : "1fr 1fr 1fr", gap: 10, margin: "14px 0", textAlign: "center" }}>
-        {!hideProfit && <S k="Precio" v={fmtCharged(o)} c="var(--gold)" />}<S k="Pago booster" v={fmtARS(o.booster_pay)} c="var(--cyan)" />
+        {!hideProfit && <S k="Precio" v={<span>{fmtCharged(o)}{isUsdOrder(o) && o.price ? <div className="nop-mini" style={{ color: "var(--mut2)", fontWeight: 400, marginTop: 2 }}>≈ {fmtARS(o.price)}</div> : null}</span>} c="var(--gold)" />}<S k="Pago booster" v={fmtARS(o.booster_pay)} c="var(--cyan)" />
         {!hideProfit && <S k="Ganancia" v={fmtARS(o.profit)} c="var(--grn)" />}
       </div>
       {o.survey_rating && <div className="nop-card" style={{ padding: 14, background: "var(--bg2)" }}>
@@ -2186,6 +2220,8 @@ function AdminFinance({ orders, profiles, flash, reload }) {
   const completedWithBooster = completed.filter((o) => o.booster_id);
   const payPending = completedWithBooster.filter((o) => !o.booster_paid);
   const payDoneThisMonth = completedWithBooster.filter((o) => o.booster_paid && mKey(o.booster_paid_at || o.completed_at) === month);
+  // Pagos futuros: servicios en proceso (no terminados) con booster asignado — deuda que se generará al finalizar.
+  const payFuture = orders.filter((o) => o.status === "in_progress" && o.booster_id).reduce((a, o) => a + Number(o.booster_pay || 0), 0);
 
   // --- INGRESOS ---
   const arsOrders = monthDone.filter((o) => (o.currency || "ars") === "ars");
@@ -2293,7 +2329,8 @@ function AdminFinance({ orders, profiles, flash, reload }) {
   return <>
     <div className="nop-sectionhead">
       <div><h1 className="nop-h1">Gestión contable</h1>
-        <p className="nop-sub">Dólar blue: <b style={{ color: "var(--grn)" }}>{blue ? fmtARS(blue) : "…"}</b> · <button className="nop-linkbtn" style={{ display: "inline" }} onClick={() => fetchBlue().then(setBlue)}>actualizar</button></p></div>
+        <p className="nop-sub" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>Dólar blue: <b style={{ color: "var(--grn)" }}>{blue ? fmtARS(blue) : "…"}</b>
+          <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => fetchBlue().then(setBlue)}><RefreshCw size={12} />Actualizar</button></p></div>
       <select className="nop-select" style={{ width: "auto", minWidth: 170 }} value={month} onChange={(e) => setMonth(e.target.value)}>
         {months.map((k) => <option key={k} value={k}>{mLabel(k)}</option>)}
       </select>
@@ -2394,7 +2431,7 @@ function AdminFinance({ orders, profiles, flash, reload }) {
     </div>
 
     <div className="nop-card nop-panel" style={{ marginBottom: 14 }}>
-      <div className="nop-panel-h"><Check size={15} style={{ color: "var(--grn)" }} />Pagos realizados · {mLabel(month)} <span className="nop-mini" style={{ marginLeft: "auto", fontWeight: 400 }}>Total pagado: <b style={{ color: "var(--grn)" }}>{fmtARS(payDoneThisMonth.reduce((a, o) => a + Number(o.booster_pay || 0), 0))}</b></span></div>
+      <div className="nop-panel-h"><Check size={15} style={{ color: "var(--grn)" }} />Pagos realizados · {mLabel(month)} <span className="nop-mini" style={{ marginLeft: "auto", fontWeight: 400 }}>Total pagado: <b style={{ color: "var(--grn)" }}>{fmtARS(payDoneThisMonth.reduce((a, o) => a + Number(o.booster_pay || 0), 0))}</b> · Pagos futuros: <b style={{ color: "var(--amber)" }}>{fmtARS(payFuture)}</b></span></div>
       {payDoneThisMonth.length === 0 ? <Empty icon={Wallet} title="Sin pagos este mes" sub="Los pagos marcados como realizados aparecen en el mes en que se pagaron." /> :
         <div className="nop-tablewrap"><table className="nop-t">
           <thead><tr><th>#</th><th>Booster</th><th>Servicio</th><th>Pagado el</th><th>Pago booster</th><th>Acción</th></tr></thead>
