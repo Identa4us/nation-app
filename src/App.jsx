@@ -192,6 +192,16 @@ function timeAgo(t) {
   return `hace ${Math.floor(s / 86400)} d`;
 }
 const fmtDay = (d) => d ? new Date(d).toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric" }) : "—";
+// Detecta viewport angosto (celular) para adaptar grillas/tipografías
+function useIsMobile(bp = 640) {
+  const [m, setM] = useState(typeof window !== "undefined" ? window.innerWidth <= bp : false);
+  useEffect(() => {
+    const on = () => setM(window.innerWidth <= bp);
+    window.addEventListener("resize", on);
+    return () => window.removeEventListener("resize", on);
+  }, [bp]);
+  return m;
+}
 
 /* ===================== UI atoms ===================== */
 function RankPath({ o }) {
@@ -2322,7 +2332,8 @@ function AdminFinance({ orders, profiles, flash, reload }) {
   const delExpense = async (id) => { await supabase.from("fin_expenses").delete().eq("id", id); await load(); };
   const editExpense = async (id, amount) => { await supabase.from("fin_expenses").update({ amount: Number(amount) }).eq("id", id); await load(); };
 
-  const KPI = ({ lbl, val, c, sub }) => <div className="nop-card nop-kpi"><div className="gl" style={{ background: c }} /><div className="lbl" style={{ color: "var(--mut)" }}>{lbl}</div><div className="val" style={{ color: c }}>{val}</div>{sub && <div className="delta">{sub}</div>}</div>;
+  const mobile = useIsMobile();
+  const KPI = ({ lbl, val, c, sub }) => <div className="nop-card nop-kpi"><div className="gl" style={{ background: c }} /><div className="lbl" style={{ color: "var(--mut)" }}>{lbl}</div><div className="val" style={{ color: c, whiteSpace: "normal", overflowWrap: "anywhere", fontSize: mobile ? 21 : undefined, lineHeight: 1.15 }}>{val}</div>{sub && <div className="delta">{sub}</div>}</div>;
 
   return <>
     <div className="nop-sectionhead">
@@ -2335,7 +2346,7 @@ function AdminFinance({ orders, profiles, flash, reload }) {
     </div>
 
     {/* CUENTAS */}
-    <div className="nop-grid-kpi" style={{ gridTemplateColumns: "repeat(3,1fr)", marginBottom: 8 }}>
+    <div className="nop-grid-kpi" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", marginBottom: 8 }}>
       {KPI({ lbl: "Cuenta en PESOS", val: fmtARS(saldoArs), c: "var(--gold)", sub: "saldo real acumulado" })}
       {KPI({ lbl: "Cuenta en USD", val: fmtUSD(saldoUsd), c: "var(--grn)", sub: "neto, después de comisión" })}
       {KPI({ lbl: "Total unificado", val: fmtARS(saldoUnificadoArs), c: "var(--cyan)", sub: blue ? `USD al blue ${fmtARS(blue)}` : "—" })}
@@ -2345,7 +2356,7 @@ function AdminFinance({ orders, profiles, flash, reload }) {
     {/* RESUMEN DEL MES */}
     <div className="nop-card nop-panel" style={{ marginBottom: 14 }}>
       <div className="nop-panel-h"><Activity size={15} style={{ color: "var(--gold)" }} />Resumen de {mLabel(month)}</div>
-      <div className="nop-grid-kpi" style={{ gridTemplateColumns: "repeat(4,1fr)" }}>
+      <div className="nop-grid-kpi" style={{ gridTemplateColumns: mobile ? "repeat(2,1fr)" : "repeat(4,1fr)" }}>
         {KPI({ lbl: "Cobrado (pesos)", val: fmtARS(cobradoArs), c: "var(--gold)", sub: arsOrders.length + " servicios" })}
         {KPI({ lbl: "Cobrado (USD neto)", val: fmtUSD(cobradoUsdNeto), c: "var(--grn)", sub: `bruto ${fmtUSD(cobradoUsdBruto)} · ${usdOrders.length} serv.` })}
         {KPI({ lbl: "Cobrado total", val: fmtARS(cobradoTotalArs), c: "var(--cyan)", sub: "en pesos (USD al blue del cobro)" })}
@@ -2383,7 +2394,7 @@ function AdminFinance({ orders, profiles, flash, reload }) {
       </div>}
     </div>
 
-    <div className="nop-twocol" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
+    <div className="nop-twocol" style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr", gap: 14, marginBottom: 14 }}>
       {/* GASTOS */}
       <ExpensesPanel month={month} mLabel={mLabel} monthExpenses={monthExpenses} onAdd={addExpense} onDel={delExpense} onEdit={editExpense} total={gastosTotal} pesoOf={pesoOf} tarjetaRate={tarjetaRate} />
       {/* REPARTO */}
