@@ -1056,7 +1056,7 @@ function AdminClients({ profiles, orders, deleteUser }) {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(null);
   let clients = profiles.filter((p) => p.role === "cliente");
-  if (q) clients = clients.filter((p) => ((p.full_name || "") + (p.email || "")).toLowerCase().includes(q.toLowerCase()));
+  if (q) { const nq = q.toLowerCase().trim(); clients = clients.filter((p) => ((p.full_name || "") + " " + (p.email || "") + " " + (p.phone || "") + " " + (p.discord || "")).toLowerCase().includes(nq)); }
   const statsOf = (id) => {
     const mine = orders.filter((o) => o.client_id === id);
     return {
@@ -1078,7 +1078,7 @@ function AdminClients({ profiles, orders, deleteUser }) {
     <div className="nop-card nop-panel" style={{ marginBottom: 14 }}>
       <div style={{ position: "relative", maxWidth: 320 }}>
         <Search size={15} style={{ position: "absolute", left: 12, top: 12, color: "var(--mut2)" }} />
-        <input className="nop-input" style={{ paddingLeft: 36 }} placeholder="Buscar por nombre o email" value={q} onChange={(e) => setQ(e.target.value)} />
+        <input className="nop-input" style={{ paddingLeft: 36 }} placeholder="Buscar por nombre, email o teléfono" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
     </div>
     <div className="nop-card nop-panel">
@@ -2054,6 +2054,7 @@ function OrderModal({ o, onClose, onDelete, hideProfit, onEdited, flash }) {
     price: o.price || 0, notes: o.notes || "", role_champ: o.role_champ || "",
     pref_days: o.pref_days || "", pref_times: o.pref_times || "",
     acct_user: o.acct_user || "", acct_pass: o.acct_pass || "",
+    booster_pay: o.booster_pay ?? "", usd_amount: o.usd_amount ?? "", admin_note: o.admin_note || "",
   });
   const upd = (k, v) => setF2((s) => ({ ...s, [k]: v }));
   const saveEdit = async () => {
@@ -2065,9 +2066,14 @@ function OrderModal({ o, onClose, onDelete, hideProfit, onEdited, flash }) {
       notes: f.notes || null, role_champ: f.role_champ || null,
       pref_days: f.pref_days || null, pref_times: f.pref_times || null,
       acct_user: f.acct_user || null, acct_pass: f.acct_pass || null,
+      admin_note: f.admin_note || null,
     };
-    // recalcular profit si hay booster
-    if (o.booster_pay != null) patch.profit = (Number(f.price) || 0) - Number(o.booster_pay || 0);
+    // montos editables
+    if (f.booster_pay !== "" && f.booster_pay != null) patch.booster_pay = Number(f.booster_pay) || 0;
+    if (o.currency === "usd") patch.usd_amount = f.usd_amount === "" ? null : Number(f.usd_amount);
+    // recalcular ganancia con el pago (editado o actual)
+    const payForProfit = patch.booster_pay != null ? patch.booster_pay : Number(o.booster_pay || 0);
+    patch.profit = (Number(f.price) || 0) - Number(payForProfit || 0);
     const { error } = await supabase.from("orders").update(patch).eq("id", o.id);
     setBusy(false);
     if (error) { alert("No se pudo guardar: " + error.message); return; }
@@ -2099,7 +2105,11 @@ function OrderModal({ o, onClose, onDelete, hideProfit, onEdited, flash }) {
             <select className="nop-select" value={f.tgt_rank} onChange={(e) => upd("tgt_rank", e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
             <select className="nop-select" value={f.tgt_div} onChange={(e) => upd("tgt_div", e.target.value)} disabled={f.tgt_rank === "Master"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select></div></div>}
         </div>
-        <div className="nop-field"><label>Precio (ARS)</label><input className="nop-input" type="number" value={f.price} onChange={(e) => upd("price", e.target.value)} /></div>
+        <div className="nop-row2">
+          <div className="nop-field"><label>Precio (ARS)</label><input className="nop-input" type="number" value={f.price} onChange={(e) => upd("price", e.target.value)} /></div>
+          <div className="nop-field"><label>Pago al booster (ARS)</label><input className="nop-input" type="number" value={f.booster_pay} onChange={(e) => upd("booster_pay", e.target.value)} placeholder="0" /></div>
+        </div>
+        {o.currency === "usd" && <div className="nop-field"><label>Monto cobrado en USD</label><input className="nop-input" type="number" step="0.01" value={f.usd_amount} onChange={(e) => upd("usd_amount", e.target.value)} placeholder="USD" /></div>}
         {o.service === "eloboost" && <div className="nop-row2">
           <div className="nop-field"><label>Usuario de la cuenta</label><input className="nop-input" value={f.acct_user} onChange={(e) => upd("acct_user", e.target.value)} placeholder="usuario de login" /></div>
           <div className="nop-field"><label>Contraseña de la cuenta</label><input className="nop-input" value={f.acct_pass} onChange={(e) => upd("acct_pass", e.target.value)} placeholder="contraseña" /></div>
@@ -2109,7 +2119,8 @@ function OrderModal({ o, onClose, onDelete, hideProfit, onEdited, flash }) {
           <div className="nop-field"><label>Días</label><input className="nop-input" value={f.pref_days} onChange={(e) => upd("pref_days", e.target.value)} /></div>
           <div className="nop-field"><label>Horarios</label><input className="nop-input" value={f.pref_times} onChange={(e) => upd("pref_times", e.target.value)} /></div>
         </div>
-        <div className="nop-field"><label>Notas</label><textarea className="nop-ta" value={f.notes} onChange={(e) => upd("notes", e.target.value)} /></div>
+        <div className="nop-field"><label>Nota del cliente</label><textarea className="nop-ta" value={f.notes} onChange={(e) => upd("notes", e.target.value)} /></div>
+        <div className="nop-field"><label>Nota interna (solo admin y boosters)</label><textarea className="nop-ta" value={f.admin_note} onChange={(e) => upd("admin_note", e.target.value)} placeholder="Instrucciones para el booster, aclaraciones internas, etc. El cliente no la ve." /></div>
         <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
           <button className="nop-btn nop-btn-ghost" style={{ flex: 1 }} onClick={() => setEditing(false)}>Cancelar</button>
           <button className="nop-btn nop-btn-gold" style={{ flex: 1 }} disabled={busy} onClick={saveEdit}>{busy ? "Guardando…" : "Guardar cambios"}<Check size={15} /></button>
@@ -2158,6 +2169,10 @@ function OrderModal({ o, onClose, onDelete, hideProfit, onEdited, flash }) {
       {o.pref_days && <F k="Días de preferencia" v={o.pref_days} />}
       {o.pref_times && <F k="Horario de preferencia" v={o.pref_times} />}
       {o.notes && <F k="Notas del cliente" v={o.notes} />}
+      {o.admin_note && <div className="nop-card" style={{ padding: 12, background: "var(--bg2)", margin: "10px 0", borderLeft: "3px solid var(--amber)" }}>
+        <div className="nop-mini" style={{ color: "var(--amber)", marginBottom: 4, fontWeight: 600 }}>📌 Nota interna (admin / booster)</div>
+        <p style={{ fontSize: 13, color: "var(--tx)", whiteSpace: "pre-wrap", margin: 0, lineHeight: 1.5 }}>{o.admin_note}</p>
+      </div>}
       <F k="Booster" v={o.booster_name || "Sin asignar"} />
       <F k="Medio de pago" v={o.payment} />
       {(o.discount_ars > 0 || o.discount_usd > 0 || o.promo_code_text) && <F k="Descuento aplicado" v={<span style={{ color: "var(--grn)" }}>{o.promo_code_text ? o.promo_code_text + " · " : ""}−{o.currency === "usd" && o.discount_usd ? fmtUSD(o.discount_usd) : fmtARS(o.discount_ars || 0)}</span>} />}
@@ -2634,6 +2649,10 @@ function BoosterMine({ profile, orders, reload, flash, notify }) {
             {o.pref_days && <span><CalendarDays size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />Días: {o.pref_days}</span>}
             {o.pref_times && <span><Clock size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />Horario: {o.pref_times}</span>}</div>}
           {o.notes && <p className="nop-mini" style={{ fontStyle: "italic", marginBottom: 14 }}>Nota: "{o.notes}"</p>}
+          {o.admin_note && <div className="nop-card" style={{ padding: 12, background: "var(--bg2)", marginBottom: 14, borderLeft: "3px solid var(--amber)" }}>
+            <div className="nop-mini" style={{ color: "var(--amber)", marginBottom: 4, fontWeight: 600 }}>📌 Nota del staff</div>
+            <p style={{ fontSize: 13, color: "var(--tx)", whiteSpace: "pre-wrap", margin: 0, lineHeight: 1.5 }}>{o.admin_note}</p>
+          </div>}
           {o.service === "eloboost" && (o.acct_user || o.acct_pass) && <div className="nop-card" style={{ padding: 14, background: "var(--bg2)", marginBottom: 14 }}>
             <div className="nop-panel-h" style={{ marginBottom: 10 }}><Shield size={14} style={{ color: "var(--gold)" }} />Credenciales de la cuenta</div>
             <Cred label="Usuario" value={o.acct_user} flash={flash} />
