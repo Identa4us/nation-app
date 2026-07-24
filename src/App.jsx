@@ -2080,7 +2080,7 @@ function cleanRoleDetail(s) {
 }
 function OrderModal({ o, onClose, onDelete, hideProfit, onEdited, flash, profiles }) {
   const say = flash || (() => {});
-  const boosters = (profiles || []).filter((p) => p.role === "booster" && p.status === "active");
+  const boosters = (profiles || []).filter((p) => p.role === "booster" && (p.status === "active" || p.id === o.booster_id));
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [f, setF2] = useState({
@@ -2109,25 +2109,23 @@ function OrderModal({ o, onClose, onDelete, hideProfit, onEdited, flash, profile
     // montos editables
     if (f.booster_pay !== "" && f.booster_pay != null) patch.booster_pay = Number(f.booster_pay) || 0;
     if (o.currency === "usd") patch.usd_amount = f.usd_amount === "" ? null : Number(f.usd_amount);
-    // reasignar booster: mueve el pedido entre perfiles (los boosters filtran por booster_id)
+    // reasignar / reparar booster: SIEMPRE fija booster_name según el seleccionado
+    // (los boosters filtran por booster_id; el nombre es lo que se muestra en las tablas)
     const newBoosterId = f.booster_id || null;
-    if ((newBoosterId || null) !== (o.booster_id || null)) {
-      const nb = boosters.find((b) => b.id === newBoosterId);
-      patch.booster_id = newBoosterId;
-      patch.booster_name = nb ? nb.full_name : null;
-      if (newBoosterId) {
-        if (o.status === "available" || o.status === "pending") { patch.status = "in_progress"; }
-        if (!o.accepted_at) patch.accepted_at = new Date().toISOString();
-      } else {
-        // desasignado → vuelve a disponible
-        if (o.status === "in_progress") patch.status = "available";
-        patch.accepted_at = null;
-        if (!o.is_refund) patch.booster_pay = null;
-      }
+    const nb = (profiles || []).find((b) => b.id === newBoosterId);
+    patch.booster_id = newBoosterId;
+    patch.booster_name = nb ? nb.full_name : (newBoosterId ? (o.booster_name || null) : null);
+    if (newBoosterId) {
+      if (o.status === "available" || o.status === "pending") patch.status = "in_progress";
+      if (!o.accepted_at) patch.accepted_at = new Date().toISOString();
+    } else {
+      if (o.status === "in_progress") patch.status = "available";
+      patch.accepted_at = null;
+      if (!o.is_refund) patch.booster_pay = null;
     }
     // recalcular ganancia con el pago (editado o actual)
     const payForProfit = patch.booster_pay !== undefined ? patch.booster_pay : Number(o.booster_pay || 0);
-    patch.profit = (patch.booster_id !== undefined ? patch.booster_id : o.booster_id) ? ((Number(f.price) || 0) - Number(payForProfit || 0)) : null;
+    patch.profit = newBoosterId ? ((Number(f.price) || 0) - Number(payForProfit || 0)) : null;
     const { error } = await supabase.from("orders").update(patch).eq("id", o.id);
     setBusy(false);
     if (error) { alert("No se pudo guardar: " + error.message); return; }
