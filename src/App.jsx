@@ -149,6 +149,8 @@ const fmtCharged = (o) => isUsdOrder(o) ? fmtUSD(o.usd_amount) : fmtARS(o.price)
 // Pago FINAL al booster (siempre en pesos). El descuento del cliente NO lo toca:
 // se calcula sobre el precio ARS pre-descuento (price + discount_ars), igual que al asignar/aceptar.
 const previewBoosterPay = (o, cut) => Math.round((Number(o.price || 0) + Number(o.discount_ars || 0)) * Number(cut || 0.5));
+// Muestra el pago al booster en su moneda: si cobra en USD, convierte con el blue; si no, en pesos.
+const fmtBoosterPay = (ars, prof, blue) => (prof && prof.pay_currency === "usd" && blue) ? fmtUSD((Number(ars) || 0) / blue) : fmtARS(ars);
 async function openReceipt(path) {
   try {
     const { data } = await supabase.storage.from("comprobantes").createSignedUrl(path, 120);
@@ -488,7 +490,7 @@ export default function App() {
 
       {drawer && <Drawer notifs={visibleNotifs} lastSeen={lastSeen} onClose={closeDrawer} onClick={handleNotif} onMarkAll={markSeen} />}
       {showProfile && <ProfileModal profile={profile} onClose={() => setShowProfile(false)} flash={flash} reload={reload} />}
-      {focusOrder && <OrderModal o={focusOrder} onClose={() => setFocusOrder(null)} onDelete={profile.role === "admin" ? deleteOrder : null} flash={flash} />}
+      {focusOrder && <OrderModal o={focusOrder} onClose={() => setFocusOrder(null)} onDelete={profile.role === "admin" ? deleteOrder : null} flash={flash} profiles={profiles} />}
       {toast && <div className="nop-toast"><Check size={16} style={{ color: "var(--grn)" }} />{toast}</div>}
     </>
   );
@@ -1206,8 +1208,8 @@ function AdminDash({ orders, profiles, reload, flash, notify, deleteOrder }) {
     </div>
     <div className="nop-grid-kpi" style={{ marginBottom: 14 }}>
       {kpi("Facturación (ganancia neta)", fmtARS(facturacion), Wallet, "var(--gold)", periodo + " · validados en adelante")}
-      {kpi("Servicios facturados", billed.length, TrendingUp, "var(--grn)", `${completed.length} cerrados`)}
-      {kpi("Servicios cerrados", completed.length, Trophy, "var(--cyan)", periodo)}
+      {kpi("Servicios facturados", billed.filter((o) => !o.is_refund).length, TrendingUp, "var(--grn)", `${completed.filter((o) => !o.is_refund).length} cerrados`)}
+      {kpi("Servicios cerrados", completed.filter((o) => !o.is_refund).length, Trophy, "var(--cyan)", periodo)}
       {kpi("Servicios activos", liveActive.length, Zap, capacity.color, boosters.length > 0 ? capacity.label : "Cargá boosters para ver capacidad")}
     </div>
     <div className="nop-twocol" style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 14 }}>
@@ -1304,7 +1306,7 @@ function AdminDash({ orders, profiles, reload, flash, notify, deleteOrder }) {
         </div>
       </div>
     </div>}
-    {detail && <OrderModal o={detail} onClose={() => setDetail(null)} onDelete={deleteOrder} onEdited={reload} flash={flash} />}
+    {detail && <OrderModal o={detail} onClose={() => setDetail(null)} onDelete={deleteOrder} onEdited={reload} flash={flash} profiles={profiles} />}
   </>;
 }
 function AdminOrders({ orders, profiles, reload, flash, deleteOrder, notify }) {
@@ -1373,7 +1375,7 @@ function AdminOrders({ orders, profiles, reload, flash, deleteOrder, notify }) {
     </div>
     <div className="nop-card nop-panel">
       {list.length === 0 ? <Empty icon={Hash} title="Sin resultados" sub="Probá con otro filtro." />
-        : <OrdersTable orders={list} onDelete={deleteOrder} onEdited={reload} flash={flash} cols={["id", "cliente", "rank", "servicio", "booster", "precio", "pago", "ganancia", "estado"]} />}
+        : <OrdersTable orders={list} onDelete={deleteOrder} onEdited={reload} flash={flash} profiles={profiles} cols={["id", "cliente", "rank", "servicio", "booster", "precio", "pago", "ganancia", "estado"]} />}
     </div>
     {showImport && <BulkImportModal profiles={profiles || []} reload={reload} flash={flash} onClose={() => setShowImport(false)} />}
     {showReports && <ReportsModal orders={orders} flash={flash} onClose={() => setShowReports(false)} />}
@@ -1400,6 +1402,9 @@ function NewOrderModal({ profiles, reload, flash, notify, onClose }) {
   const [blue, setBlue] = useState(null);
   useEffect(() => { if (currency === "usd" && !blue) fetchBlue().then(setBlue); }, [currency]);
   const [assign, setAssign] = useState("");                // booster_id
+  const [entryType, setEntryType] = useState("servicio");  // 'servicio' | 'devolucion'
+  const [boosterPayManual, setBoosterPayManual] = useState(""); // pago al booster (para devoluciones)
+  const isRefund = entryType === "devolucion";
   const [payment, setPayment] = useState("Transferencia (pesos)");
   const [placementMode, setPlacementMode] = useState("soloq");
   const [protectDec, setProtectDec] = useState(false);
@@ -1447,17 +1452,24 @@ function NewOrderModal({ profiles, reload, flash, notify, onClose }) {
       if (c) { cliId = c.id; cliName = c.full_name; cliDiscord = c.discord || c.email; }
     }
     if (!cliName) { flash("Elegí un cliente o ingresá el nombre manualmente."); return; }
-    if (!finalPrice || finalPrice <= 0) { flash("Ingresá un precio válido."); return; }
+    if (isRefund) {
+      if (!assign) { flash("En una devolución tenés que asignar el booster que la rehace."); return; }
+      if (!Number(boosterPayManual)) { flash("Ingresá el pago al booster de la devolución."); return; }
+    } else if (!finalPrice || finalPrice <= 0) { flash("Ingresá un precio válido."); return; }
 
     setBusy(true);
     // Si se asigna a booster, el status pasa directo a in_progress
     const boosterProfile = assign ? boosters.find((b) => b.id === assign) : null;
     const status = boosterProfile ? "in_progress" : "available";
-    const boosterPay = boosterProfile ? Math.round(Number(finalPrice) * Number(boosterProfile.cut || 0.5)) : null;
+    // Devolución: precio 0 (sin ingreso), el booster cobra igual → la ganancia es la pérdida.
+    const priceForRow = isRefund ? 0 : Number(finalPrice);
+    const boosterPay = isRefund
+      ? Math.round(Number(boosterPayManual) || 0)
+      : (boosterProfile ? Math.round(Number(finalPrice) * Number(boosterProfile.cut || 0.5)) : null);
     // Pedido en USD: guardo el monto en dólares (lo que se cobra por PayPal).
     // Si no lo cargaron a mano, lo estimo con el dólar blue a partir del precio ARS.
     let usdAmt = null, fxRate = null;
-    if (currency === "usd") {
+    if (currency === "usd" && !isRefund) {
       usdAmt = usdManual ? Number(usdManual) : (blue ? Math.round((Number(finalPrice) / blue) * 100) / 100 : null);
       fxRate = blue || null;
     }
@@ -1472,13 +1484,17 @@ function NewOrderModal({ profiles, reload, flash, notify, onClose }) {
         : isSingleMatch ? (protectDec ? "Pack protección decaimiento · 4 partidas" : `${games} partida${games > 1 ? "s" : ""}`)
         : isPlacements ? `Placements ${placementMode.toUpperCase()} · 5 partidas`
         : "",
-      notes: notes || "Pedido creado por admin (sin comprobante).",
-      payment, price: finalPrice, status,
+      notes: notes || (isRefund ? "Devolución creada por admin." : "Pedido creado por admin (sin comprobante)."),
+      payment, price: priceForRow, status,
       receipt_path: null,
       summoner: summoner || null,
       currency, usd_amount: usdAmt, fx_rate: fxRate,
+      is_refund: isRefund,
       booster_id: boosterProfile?.id || null,
+      booster_name: boosterProfile?.full_name || null,
       booster_pay: boosterPay,
+      profit: boosterProfile ? (priceForRow - Number(boosterPay || 0)) : null,
+      accepted_at: boosterProfile ? new Date().toISOString() : null,
     };
     const { data: created, error } = await supabase.from("orders").insert(row).select("id").single();
     setBusy(false);
@@ -1500,6 +1516,14 @@ function NewOrderModal({ profiles, reload, flash, notify, onClose }) {
   return <div className="nop-modal" onClick={onClose}><div className="nop-card nop-modalbox" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 640 }}>
     <div className="hd"><h3>Nuevo pedido</h3><button className="nop-iconbtn" onClick={onClose}><X size={16} /></button></div>
     <div className="bd">
+      {/* Tipo de registro */}
+      <div className="nop-field"><label>Tipo</label>
+        <div className="nop-segwrap" style={{ gridTemplateColumns: "1fr 1fr" }}>
+          <button type="button" className={"nop-seg" + (entryType === "servicio" ? " on" : "")} onClick={() => setEntryType("servicio")}>Servicio</button>
+          <button type="button" className={"nop-seg" + (entryType === "devolucion" ? " on" : "")} onClick={() => setEntryType("devolucion")}>Devolución</button>
+        </div>
+        <div className="nop-mini" style={{ marginTop: 6 }}>{isRefund ? "Devolución: el booster cobra igual, no genera ingreso (es pérdida) y no suma al conteo de servicios del dashboard." : "Servicio normal contratado por un cliente."}</div>
+      </div>
       {/* Cliente */}
       <div className="nop-field"><label>Cliente</label>
         <select className="nop-select" value={clientId} onChange={(e) => setClientId(e.target.value)}>
@@ -1597,7 +1621,8 @@ function NewOrderModal({ profiles, reload, flash, notify, onClose }) {
           <input className="nop-input" value={summoner} onChange={(e) => setSummoner(e.target.value)} placeholder="Ej: Fakality#OTP" /></div>
       </div>
 
-      {/* Precio */}
+      {/* Precio (solo servicio) */}
+      {!isRefund && <>
       <div className="nop-row2">
         <div className="nop-field"><label>{currency === "usd" ? "Precio en ARS (equiv. · pago booster)" : "Precio"} (sugerido: {fmtARS(priceAuto)})</label>
           <input className="nop-input" type="number" value={priceManual} onChange={(e) => setPriceManual(e.target.value)} placeholder={String(priceAuto)} /></div>
@@ -1612,6 +1637,13 @@ function NewOrderModal({ profiles, reload, flash, notify, onClose }) {
         <div className="nop-field"><label>Monto cobrado en USD {blue ? `(sugerido: ${fmtUSD(Math.round((Number(finalPrice) / blue) * 100) / 100)})` : ""}</label>
           <input className="nop-input" type="number" step="0.01" value={usdManual} onChange={(e) => setUsdManual(e.target.value)} placeholder={blue ? String(Math.round((Number(finalPrice) / blue) * 100) / 100) : "USD"} />
           <div className="nop-mini" style={{ marginTop: 6 }}>Lo que cobrás por PayPal. Si lo dejás vacío, se estima con el dólar blue{blue ? ` (${fmtARS(blue)})` : ""}. El pago al booster sale del precio en ARS.</div>
+        </div>
+      )}
+      </>}
+      {isRefund && (
+        <div className="nop-field"><label>Pago al booster por la devolución (ARS) <span className="req">*</span></label>
+          <input className="nop-input" type="number" value={boosterPayManual} onChange={(e) => setBoosterPayManual(e.target.value)} placeholder="Ej: 17500" />
+          <div className="nop-mini" style={{ marginTop: 6 }}>Sin ingreso (precio $0). La ganancia queda en <b style={{ color: "var(--red)" }}>−{fmtARS(Number(boosterPayManual) || 0)}</b> (pérdida). No suma al conteo de servicios.</div>
         </div>
       )}
 
@@ -1872,15 +1904,18 @@ function AdminBoosters({ orders, profiles, reload, flash, deleteUser, editUserAu
   const active = orders.filter((o) => o.status === "in_progress");
   const [editing, setEditing] = useState(null);
   const [noting, setNoting] = useState(null);
+  const [blue, setBlue] = useState(null);
+  useEffect(() => { fetchBlue().then(setBlue); }, []);
   const setCut = async (p, cut) => { await supabase.from("profiles").update({ cut }).eq("id", p.id); await reload(); flash(`Corte de ${p.full_name} → ${Math.round(cut * 100)}%`); };
   const setStatus = async (p, status) => { await supabase.from("profiles").update({ status }).eq("id", p.id); await reload(); flash(`${p.full_name}: ${status}`); };
+  const setPayCcy = async (p, ccy) => { await supabase.from("profiles").update({ pay_currency: ccy }).eq("id", p.id); await reload(); flash(`${p.full_name} cobra en ${ccy === "usd" ? "USD" : "pesos"}`); };
   const statusLabel = (s) => s === "active" ? "Habilitado" : s === "interrupted" ? "Interrumpido" : s === "disabled" ? "Deshabilitado" : s === "pending" ? "Pendiente" : s;
   const statusColor = (s) => s === "active" ? "s-completed" : s === "interrupted" ? "s-pending" : s === "pending" ? "s-pending" : "s-cancelled";
 
   return <>
     <div className="nop-sectionhead"><div><h1 className="nop-h1">Boosters</h1><p className="nop-sub">Equipo, cortes, estado y desempeño. Las altas se aprueban desde Validaciones. · <b style={{ color: "var(--tx)" }}>{boosters.length} boosters registrados</b></p></div></div>
     <div className="nop-card nop-panel"><div className="nop-tablewrap"><table className="nop-t">
-      <thead><tr><th>Booster</th><th>Estado</th><th>Corte</th><th>Activos</th><th>Hechos</th><th>Pagado</th><th>★</th><th>Acción</th></tr></thead>
+      <thead><tr><th>Booster</th><th>Estado</th><th>Corte</th><th>Cobro</th><th>Activos</th><th>Hechos</th><th>Pagado</th><th>★</th><th>Acción</th></tr></thead>
       <tbody>{boosters.map((b) => {
         const done = completed.filter((o) => o.booster_id === b.id);
         const paid = done.reduce((a, o) => a + Number(o.booster_pay || 0), 0);
@@ -1897,9 +1932,10 @@ function AdminBoosters({ orders, profiles, reload, flash, deleteUser, editUserAu
             </select>
           </td>
           <td><select className="nop-select" style={{ width: 84, padding: "6px 8px" }} value={b.cut} onChange={(e) => setCut(b, parseFloat(e.target.value))}>{[0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7].map((c) => <option key={c} value={c}>{Math.round(c * 100)}%</option>)}</select></td>
+          <td><select className="nop-select" style={{ width: 92, padding: "6px 8px", fontSize: 12 }} value={b.pay_currency || "ars"} onChange={(e) => setPayCcy(b, e.target.value)}><option value="ars">Pesos</option><option value="usd">USD</option></select></td>
           <td>{active.filter((o) => o.booster_id === b.id).length}</td>
           <td>{done.length}</td>
-          <td style={{ color: "var(--gold)", fontWeight: 600 }}>{fmtARS(paid)}</td>
+          <td style={{ color: "var(--gold)", fontWeight: 600 }}>{fmtBoosterPay(paid, b, blue)}</td>
           <td>{avg !== "—" ? avg + " ★" : "—"}</td>
           <td>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -1980,19 +2016,19 @@ function EditAuthModal({ user, onClose, onSave }) {
   </div></div>;
 }
 
-function AdminHistory({ orders, deleteOrder, flash }) {
+function AdminHistory({ orders, deleteOrder, flash, profiles }) {
   const done = orders.filter((o) => o.status === "completed");
   return <>
     <div className="nop-sectionhead"><div><h1 className="nop-h1">Historial</h1><p className="nop-sub">Servicios finalizados y reseñas.</p></div></div>
     <div className="nop-card nop-panel">
       {done.length === 0 ? <Empty icon={Trophy} title="Todavía no hay cierres" sub="Aparecen acá cuando un booster finaliza." />
-        : <OrdersTable orders={done} onDelete={deleteOrder} flash={flash} cols={["id", "cliente", "rank", "servicio", "booster", "precio", "ganancia", "rating"]} />}
+        : <OrdersTable orders={done} onDelete={deleteOrder} flash={flash} profiles={profiles} cols={["id", "cliente", "rank", "servicio", "booster", "precio", "ganancia", "rating"]} />}
     </div>
   </>;
 }
 
 /* ===== tabla compartida ===== */
-function OrdersTable({ orders, cols, onDelete, hideProfit, onEdited, flash }) {
+function OrdersTable({ orders, cols, onDelete, hideProfit, onEdited, flash, profiles }) {
   const [open, setOpen] = useState(null);
   const head = { id: "#", cliente: "Cliente", rank: "Recorrido", servicio: "Servicio", booster: "Booster", precio: "Precio", pago: "Pago booster", ganancia: "Ganancia", estado: "Estado", rating: "Reseña" };
   return <>
@@ -2000,7 +2036,7 @@ function OrdersTable({ orders, cols, onDelete, hideProfit, onEdited, flash }) {
       <thead><tr>{cols.map((c) => <th key={c}>{head[c]}</th>)}</tr></thead>
       <tbody>{orders.map((o) => <tr key={o.id} style={{ cursor: "pointer" }} onClick={() => setOpen(o)}>{cols.map((c) => <td key={c}>{cell(c, o)}</td>)}</tr>)}</tbody>
     </table></div>
-    {open && <OrderModal o={open} onClose={() => setOpen(null)} onDelete={onDelete} hideProfit={hideProfit} onEdited={onEdited} flash={flash} />}
+    {open && <OrderModal o={open} onClose={() => setOpen(null)} onDelete={onDelete} hideProfit={hideProfit} onEdited={onEdited} flash={flash} profiles={profiles} />}
   </>;
 }
 function ExtrasTags({ o }) {
@@ -2042,8 +2078,9 @@ function cleanRoleDetail(s) {
     .replace(/\s{2,}/g, " ")
     .trim();
 }
-function OrderModal({ o, onClose, onDelete, hideProfit, onEdited, flash }) {
+function OrderModal({ o, onClose, onDelete, hideProfit, onEdited, flash, profiles }) {
   const say = flash || (() => {});
+  const boosters = (profiles || []).filter((p) => p.role === "booster" && p.status === "active");
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [f, setF2] = useState({
@@ -2055,6 +2092,7 @@ function OrderModal({ o, onClose, onDelete, hideProfit, onEdited, flash }) {
     pref_days: o.pref_days || "", pref_times: o.pref_times || "",
     acct_user: o.acct_user || "", acct_pass: o.acct_pass || "",
     booster_pay: o.booster_pay ?? "", usd_amount: o.usd_amount ?? "", admin_note: o.admin_note || "",
+    booster_id: o.booster_id || "",
   });
   const upd = (k, v) => setF2((s) => ({ ...s, [k]: v }));
   const saveEdit = async () => {
@@ -2071,9 +2109,25 @@ function OrderModal({ o, onClose, onDelete, hideProfit, onEdited, flash }) {
     // montos editables
     if (f.booster_pay !== "" && f.booster_pay != null) patch.booster_pay = Number(f.booster_pay) || 0;
     if (o.currency === "usd") patch.usd_amount = f.usd_amount === "" ? null : Number(f.usd_amount);
+    // reasignar booster: mueve el pedido entre perfiles (los boosters filtran por booster_id)
+    const newBoosterId = f.booster_id || null;
+    if ((newBoosterId || null) !== (o.booster_id || null)) {
+      const nb = boosters.find((b) => b.id === newBoosterId);
+      patch.booster_id = newBoosterId;
+      patch.booster_name = nb ? nb.full_name : null;
+      if (newBoosterId) {
+        if (o.status === "available" || o.status === "pending") { patch.status = "in_progress"; }
+        if (!o.accepted_at) patch.accepted_at = new Date().toISOString();
+      } else {
+        // desasignado → vuelve a disponible
+        if (o.status === "in_progress") patch.status = "available";
+        patch.accepted_at = null;
+        if (!o.is_refund) patch.booster_pay = null;
+      }
+    }
     // recalcular ganancia con el pago (editado o actual)
-    const payForProfit = patch.booster_pay != null ? patch.booster_pay : Number(o.booster_pay || 0);
-    patch.profit = (Number(f.price) || 0) - Number(payForProfit || 0);
+    const payForProfit = patch.booster_pay !== undefined ? patch.booster_pay : Number(o.booster_pay || 0);
+    patch.profit = (patch.booster_id !== undefined ? patch.booster_id : o.booster_id) ? ((Number(f.price) || 0) - Number(payForProfit || 0)) : null;
     const { error } = await supabase.from("orders").update(patch).eq("id", o.id);
     setBusy(false);
     if (error) { alert("No se pudo guardar: " + error.message); return; }
@@ -2108,6 +2162,16 @@ function OrderModal({ o, onClose, onDelete, hideProfit, onEdited, flash }) {
         <div className="nop-row2">
           <div className="nop-field"><label>Precio (ARS)</label><input className="nop-input" type="number" value={f.price} onChange={(e) => upd("price", e.target.value)} /></div>
           <div className="nop-field"><label>Pago al booster (ARS)</label><input className="nop-input" type="number" value={f.booster_pay} onChange={(e) => upd("booster_pay", e.target.value)} placeholder="0" /></div>
+        </div>
+        <div className="nop-field"><label>Booster asignado</label>
+          <select className="nop-select" value={f.booster_id} onChange={(e) => {
+            const id = e.target.value; const nb = boosters.find((b) => b.id === id);
+            setF2((s) => ({ ...s, booster_id: id, booster_pay: id ? (o.is_refund ? s.booster_pay : Math.round((Number(s.price) || 0) * Number((nb && nb.cut) || 0.5))) : "" }));
+          }}>
+            <option value="">— Sin asignar (vuelve a disponibles) —</option>
+            {boosters.map((b) => <option key={b.id} value={b.id}>{b.full_name} · corte {Math.round((b.cut || 0.5) * 100)}%</option>)}
+          </select>
+          <div className="nop-mini" style={{ marginTop: 6 }}>Si cambiás el booster, el servicio se mueve a su perfil (desaparece del anterior). El pago se recalcula por su corte; podés ajustarlo arriba.</div>
         </div>
         {o.currency === "usd" && <div className="nop-field"><label>Monto cobrado en USD</label><input className="nop-input" type="number" step="0.01" value={f.usd_amount} onChange={(e) => upd("usd_amount", e.target.value)} placeholder="USD" /></div>}
         {o.service === "eloboost" && <div className="nop-row2">
@@ -2375,7 +2439,7 @@ function AdminFinance({ orders, profiles, flash, reload }) {
         {KPI({ lbl: "Cobrado (pesos)", val: fmtARS(cobradoArs), c: "var(--gold)", sub: arsOrders.length + " servicios" })}
         {KPI({ lbl: "Cobrado (USD neto)", val: fmtUSD(cobradoUsdNeto), c: "var(--grn)", sub: `bruto ${fmtUSD(cobradoUsdBruto)} · ${usdOrders.length} serv.` })}
         {KPI({ lbl: "Cobrado total", val: fmtARS(cobradoTotalArs), c: "var(--cyan)", sub: "en pesos (USD al blue del cobro)" })}
-        {KPI({ lbl: "Servicios", val: monthDone.length, c: "var(--violet)", sub: "completados en el mes" })}
+        {KPI({ lbl: "Servicios", val: monthDone.filter((o) => !o.is_refund).length, c: "var(--violet)", sub: "completados en el mes" })}
       </div>
       <div className="nop-finflow">
         <div className="row"><span>Cobrado total del mes (bruto)</span><b style={{ color: "var(--gold)" }}>{fmtARS(cobradoTotalArs)}</b></div>
@@ -2551,7 +2615,21 @@ function BoosterViews({ tab, ...ctx }) {
   return <BoosterBoard {...ctx} />;
 }
 function BoosterBoard({ profile, orders, reload, flash, notify }) {
-  const open = orders.filter((o) => o.status === "available");
+  const [blue, setBlue] = useState(null);
+  const [fSvc, setFSvc] = useState("todos");
+  const [fServer, setFServer] = useState(profile.pref_server || "todos");
+  useEffect(() => { if (profile.pay_currency === "usd") fetchBlue().then(setBlue); }, [profile.pay_currency]);
+
+  let open = orders.filter((o) => o.status === "available");
+  if (fSvc !== "todos") open = open.filter((o) => o.service === fSvc);
+  if (fServer !== "todos") open = open.filter((o) => o.server === fServer);
+
+  const pinServer = async (val) => {
+    setFServer(val);
+    // Guardar el servidor fijado en el perfil (persiste entre sesiones/dispositivos)
+    try { await supabase.from("profiles").update({ pref_server: val === "todos" ? null : val }).eq("id", profile.id); await reload(); } catch (e) {}
+  };
+
   const accept = async (o) => {
     // El pago del booster se calcula sobre el precio ORIGINAL (antes del descuento del promo).
     // El descuento se descuenta de la ganancia, no del pago del booster.
@@ -2570,7 +2648,20 @@ function BoosterBoard({ profile, orders, reload, flash, notify }) {
   };
   return <>
     <div className="nop-sectionhead"><div><h1 className="nop-h1">Trabajos disponibles</h1><p className="nop-sub">Clientes validados esperando booster. El primero que acepta se lo queda.</p></div></div>
-    {open.length === 0 ? <Empty icon={Zap} title="No hay trabajos abiertos" sub="Apenas el admin valide un cliente nuevo, aparece acá al instante." /> :
+    <div className="nop-card nop-panel" style={{ marginBottom: 14 }}>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <div className="nop-field" style={{ margin: 0, flex: 1, minWidth: 160 }}><label>Servicio</label>
+          <select className="nop-select" value={fSvc} onChange={(e) => setFSvc(e.target.value)}>
+            <option value="todos">Todos los servicios</option>{Object.keys(SERVICES).map((k) => <option key={k} value={k}>{SERVICES[k].label}</option>)}
+          </select></div>
+        <div className="nop-field" style={{ margin: 0, flex: 1, minWidth: 160 }}><label>Servidor {fServer !== "todos" && <span style={{ color: "var(--gold)" }}>· 📌 fijado</span>}</label>
+          <select className="nop-select" value={fServer} onChange={(e) => pinServer(e.target.value)}>
+            <option value="todos">Todos los servidores</option>{ACCOUNT_SERVERS.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select></div>
+      </div>
+      <p className="nop-mini" style={{ marginTop: 8 }}>Si fijás un servidor, queda guardado y solo vas a ver trabajos de esa región cada vez que entres.</p>
+    </div>
+    {open.length === 0 ? <Empty icon={Zap} title="No hay trabajos abiertos" sub={fServer !== "todos" || fSvc !== "todos" ? "Probá quitar los filtros o cambiar de servidor." : "Apenas el admin valide un cliente nuevo, aparece acá al instante."} /> :
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(300px,1fr))", gap: 14 }}>{open.map((o) => (
         <div className="nop-card nop-panel" key={o.id} style={{ display: "flex", flexDirection: "column", gap: 13, minWidth: 0 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><SvcTag s={o.service} /><span className="nop-mini">{timeAgo(o.created_at)}</span></div>
@@ -2588,7 +2679,7 @@ function BoosterBoard({ profile, orders, reload, flash, notify }) {
             {o.pref_times && <span><Clock size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />{o.pref_times}</span>}</div>}
           {o.notes && <p className="nop-mini" style={{ fontStyle: "italic" }}>"{o.notes}"</p>}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "auto", paddingTop: 8, borderTop: "1px solid var(--line)" }}>
-            <div><div className="nop-mini">Tu pago ({Math.round(profile.cut * 100)}%)</div><div className="nop-display" style={{ fontSize: 18, fontWeight: 700, color: "var(--gold)" }}>{fmtARS(previewBoosterPay(o, profile.cut))}</div></div>
+            <div><div className="nop-mini">Tu pago ({Math.round(profile.cut * 100)}%)</div><div className="nop-display" style={{ fontSize: 18, fontWeight: 700, color: "var(--gold)" }}>{fmtBoosterPay(previewBoosterPay(o, profile.cut), profile, blue)}</div></div>
             <button className="nop-btn nop-btn-grn" onClick={() => accept(o)}><Check size={15} />Aceptar</button>
           </div>
         </div>))}</div>}
@@ -2597,6 +2688,8 @@ function BoosterBoard({ profile, orders, reload, flash, notify }) {
 function BoosterMine({ profile, orders, reload, flash, notify }) {
   const mine = orders.filter((o) => o.booster_id === profile.id && o.status === "in_progress");
   const [progressFor, setProgressFor] = useState(null);
+  const [blue, setBlue] = useState(null);
+  useEffect(() => { if (profile.pay_currency === "usd") fetchBlue().then(setBlue); }, [profile.pay_currency]);
   const finish = async (o) => {
     await supabase.from("orders").update({ status: "completed", completed_at: new Date().toISOString() }).eq("id", o.id);
     await notify(`Servicio #${o.id} (${SERVICES[o.service].label}) finalizado por ${profile.full_name}.`, "admin", null, "done", "order", o.id);
@@ -2621,7 +2714,7 @@ function BoosterMine({ profile, orders, reload, flash, notify }) {
         <div className="nop-card nop-panel" key={o.id}>
           <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 14 }}>
             <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}><b style={{ color: "var(--mut)" }}>#{o.id}</b><SvcTag s={o.service} /><StatusBadge s={o.status} /><RankPath o={o} /></div>
-            <div className="nop-display" style={{ fontWeight: 700, color: "var(--gold)" }}>{fmtARS(o.booster_pay)}</div>
+            <div className="nop-display" style={{ fontWeight: 700, color: "var(--gold)" }}>{fmtBoosterPay(o.booster_pay, profile, blue)}</div>
           </div>
           <div className="nop-discordbox" style={{ marginBottom: 14 }}>
             <div className="ic"><MessageCircle size={19} /></div>
@@ -2713,16 +2806,19 @@ function UpdateProgressModal({ order, profile, onClose, reload, flash, notify })
 function BoosterHist({ profile, orders }) {
   const done = orders.filter((o) => o.booster_id === profile.id && o.status === "completed");
   const earned = done.reduce((a, o) => a + Number(o.booster_pay || 0), 0);
+  const [blue, setBlue] = useState(null);
+  useEffect(() => { if (profile.pay_currency === "usd") fetchBlue().then(setBlue); }, [profile.pay_currency]);
   const rs = done.filter((o) => o.survey_rating).map((o) => o.survey_rating);
   const avg = rs.length ? (rs.reduce((a, c) => a + c, 0) / rs.length).toFixed(1) : "—";
   return <>
-    <div className="nop-sectionhead"><div><h1 className="nop-h1">Mi historial</h1><p className="nop-sub">Completados y ganancias.</p></div></div>
+    <div className="nop-sectionhead"><div><h1 className="nop-h1">Mi historial</h1><p className="nop-sub">Completados y ganancias{profile.pay_currency === "usd" ? " · cobrás en USD" : ""}.</p></div></div>
     <div className="nop-grid-kpi" style={{ gridTemplateColumns: "repeat(3,1fr)", marginBottom: 14 }}>
       <div className="nop-card nop-kpi"><div className="lbl"><Trophy size={13} style={{ color: "var(--gold)" }} />Completados</div><div className="val">{done.length}</div></div>
-      <div className="nop-card nop-kpi"><div className="lbl"><Wallet size={13} style={{ color: "var(--grn)" }} />Ganado total</div><div className="val">{fmtARS(earned)}</div></div>
+      <div className="nop-card nop-kpi"><div className="lbl"><Wallet size={13} style={{ color: "var(--grn)" }} />Ganado total</div><div className="val">{fmtBoosterPay(earned, profile, blue)}</div></div>
       <div className="nop-card nop-kpi"><div className="lbl"><Star size={13} style={{ color: "var(--violet)" }} />Reseña prom.</div><div className="val">{avg !== "—" ? avg + " ★" : "—"}</div></div>
     </div>
     <div className="nop-card nop-panel">
+      {profile.pay_currency === "usd" && <p className="nop-mini" style={{ marginBottom: 10 }}>Tu total está en USD (al blue{blue ? ` ${fmtARS(blue)}` : ""}). El detalle por servicio de la tabla se muestra en pesos.</p>}
       {done.length === 0 ? <Empty icon={Trophy} title="Aún sin cierres" sub="Tus servicios finalizados se listan acá." />
         : <OrdersTable orders={done} hideProfit cols={["id", "cliente", "rank", "servicio", "pago", "rating"]} />}
     </div>
