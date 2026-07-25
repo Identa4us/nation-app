@@ -148,7 +148,18 @@ const isUsdOrder = (o) => !!o && o.currency === "usd" && o.usd_amount != null;
 const fmtCharged = (o) => isUsdOrder(o) ? fmtUSD(o.usd_amount) : fmtARS(o.price);
 // Pago FINAL al booster (siempre en pesos). El descuento del cliente NO lo toca:
 // se calcula sobre el precio ARS pre-descuento (price + discount_ars), igual que al asignar/aceptar.
-const previewBoosterPay = (o, cut) => Math.round((Number(o.price || 0) + Number(o.discount_ars || 0)) * Number(cut || 0.5));
+// Pago al booster en ARS (lo que se guarda internamente).
+// Para pedidos en USD, la base es el MONTO EN DÓLARES cobrado (así el % coincide
+// con lo que ve el cliente); se pasa a ARS con el blue. Para pedidos en pesos, base = precio ARS.
+function boosterPayArs(o, cut, blue) {
+  const c = Number(cut || 0.5);
+  if (isUsdOrder(o) && blue) {
+    const usdBase = Number(o.usd_amount || 0) + Number(o.discount_usd || 0);
+    return Math.round(usdBase * c * blue);
+  }
+  return Math.round((Number(o.price || 0) + Number(o.discount_ars || 0)) * c);
+}
+const previewBoosterPay = (o, cut, blue) => boosterPayArs(o, cut, blue);
 // Muestra el pago al booster en su moneda: si cobra en USD, convierte con el blue; si no, en pesos.
 const fmtBoosterPay = (ars, prof, blue) => (prof && prof.pay_currency === "usd" && blue) ? fmtUSD((Number(ars) || 0) / blue) : fmtARS(ars);
 async function openReceipt(path) {
@@ -1135,6 +1146,8 @@ function AdminDash({ orders, profiles, reload, flash, notify, deleteOrder }) {
   const [month, setMonth] = useState("all");
   const [assignFor, setAssignFor] = useState(null); // orden a la que le vamos a asignar booster
   const [detail, setDetail] = useState(null); // orden abierta en detalle
+  const [blue, setBlue] = useState(null);
+  useEffect(() => { fetchBlue().then(setBlue); }, []);
 
   const monthKey = (d) => { if (!d) return null; const x = new Date(d); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0"); };
   const monthLabel = (k) => { const [y, m] = k.split("-"); return new Date(y, m - 1, 1).toLocaleDateString("es-AR", { month: "long", year: "numeric" }); };
@@ -1178,8 +1191,7 @@ function AdminDash({ orders, profiles, reload, flash, notify, deleteOrder }) {
   const assignBooster = async (order, booster) => {
     // El pago del booster se calcula sobre el precio ORIGINAL (antes del descuento del promo).
     // El descuento se descuenta de la ganancia, no del pago del booster.
-    const originalPrice = Number(order.price) + Number(order.discount_ars || 0);
-    const pay = Math.round(originalPrice * Number(booster.cut || 0.5));
+    const pay = boosterPayArs(order, booster.cut, blue);
     const { error } = await supabase.from("orders")
       .update({ status: "in_progress", booster_id: booster.id, booster_name: booster.full_name, booster_pay: pay, profit: Number(order.price) - pay, accepted_at: new Date().toISOString() })
       .eq("id", order.id).eq("status", "available");
@@ -1288,7 +1300,7 @@ function AdminDash({ orders, profiles, reload, flash, notify, deleteOrder }) {
               ? <div className="nop-mini" style={{ color: "var(--red)" }}>No hay boosters activos disponibles.</div>
               : boosters.map((b) => {
                 const currentLoad = liveActive.filter((o) => o.booster_id === b.id).length;
-                const pay = previewBoosterPay(assignFor, b.cut);
+                const pay = previewBoosterPay(assignFor, b.cut, blue);
                 return (
                   <button key={b.id} className="nop-card" style={{ padding: 12, display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", background: "var(--bg2)", border: "1px solid var(--line)", textAlign: "left" }} onClick={() => assignBooster(assignFor, b)}>
                     <div>
@@ -1297,7 +1309,7 @@ function AdminDash({ orders, profiles, reload, flash, notify, deleteOrder }) {
                     </div>
                     <div style={{ textAlign: "right" }}>
                       <div className="nop-mini">Cobra</div>
-                      <b style={{ color: "var(--cyan)" }}>{fmtARS(pay)}</b>
+                      <b style={{ color: "var(--cyan)" }}>{fmtBoosterPay(pay, b, blue)}</b>
                     </div>
                   </button>
                 );
@@ -1463,16 +1475,20 @@ function NewOrderModal({ profiles, reload, flash, notify, onClose }) {
     const status = boosterProfile ? "in_progress" : "available";
     // Devolución: precio 0 (sin ingreso), el booster cobra igual → la ganancia es la pérdida.
     const priceForRow = isRefund ? 0 : Number(finalPrice);
-    const boosterPay = isRefund
-      ? Math.round(Number(boosterPayManual) || 0)
-      : (boosterProfile ? Math.round(Number(finalPrice) * Number(boosterProfile.cut || 0.5)) : null);
     // Pedido en USD: guardo el monto en dólares (lo que se cobra por PayPal).
-    // Si no lo cargaron a mano, lo estimo con el dólar blue a partir del precio ARS.
     let usdAmt = null, fxRate = null;
     if (currency === "usd" && !isRefund) {
       usdAmt = usdManual ? Number(usdManual) : (blue ? Math.round((Number(finalPrice) / blue) * 100) / 100 : null);
       fxRate = blue || null;
     }
+    // Pago al booster: en USD la base es el monto en dólares; en ARS, el precio en pesos.
+    const boosterPay = isRefund
+      ? Math.round(Number(boosterPayManual) || 0)
+      : (boosterProfile
+          ? (currency === "usd" && usdAmt && blue
+              ? Math.round(Number(usdAmt) * Number(boosterProfile.cut || 0.5) * blue)
+              : Math.round(Number(finalPrice) * Number(boosterProfile.cut || 0.5)))
+          : null);
 
     const row = {
       client_id: cliId, client_name: cliName, client_discord: cliDiscord,
@@ -2081,6 +2097,8 @@ function cleanRoleDetail(s) {
 function OrderModal({ o, onClose, onDelete, hideProfit, onEdited, flash, profiles }) {
   const say = flash || (() => {});
   const boosters = (profiles || []).filter((p) => p.role === "booster" && (p.status === "active" || p.id === o.booster_id));
+  const [blueRate, setBlueRate] = useState(null);
+  useEffect(() => { if (o.currency === "usd") fetchBlue().then(setBlueRate); }, []);
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [f, setF2] = useState({
@@ -2164,7 +2182,11 @@ function OrderModal({ o, onClose, onDelete, hideProfit, onEdited, flash, profile
         <div className="nop-field"><label>Booster asignado</label>
           <select className="nop-select" value={f.booster_id} onChange={(e) => {
             const id = e.target.value; const nb = boosters.find((b) => b.id === id);
-            setF2((s) => ({ ...s, booster_id: id, booster_pay: id ? (o.is_refund ? s.booster_pay : Math.round((Number(s.price) || 0) * Number((nb && nb.cut) || 0.5))) : "" }));
+            setF2((s) => {
+              const tmp = { ...o, price: Number(s.price) || 0, usd_amount: o.currency === "usd" ? (s.usd_amount === "" ? o.usd_amount : Number(s.usd_amount)) : o.usd_amount };
+              const pay = id ? (o.is_refund ? s.booster_pay : boosterPayArs(tmp, (nb && nb.cut) || 0.5, blueRate)) : "";
+              return { ...s, booster_id: id, booster_pay: pay };
+            });
           }}>
             <option value="">— Sin asignar (vuelve a disponibles) —</option>
             {boosters.map((b) => <option key={b.id} value={b.id}>{b.full_name} · corte {Math.round((b.cut || 0.5) * 100)}%</option>)}
@@ -2616,7 +2638,7 @@ function BoosterBoard({ profile, orders, reload, flash, notify }) {
   const [blue, setBlue] = useState(null);
   const [fSvc, setFSvc] = useState("todos");
   const [fServer, setFServer] = useState(profile.pref_server || "todos");
-  useEffect(() => { if (profile.pay_currency === "usd") fetchBlue().then(setBlue); }, [profile.pay_currency]);
+  useEffect(() => { fetchBlue().then(setBlue); }, []);
 
   let open = orders.filter((o) => o.status === "available");
   if (fSvc !== "todos") open = open.filter((o) => o.service === fSvc);
@@ -2629,10 +2651,9 @@ function BoosterBoard({ profile, orders, reload, flash, notify }) {
   };
 
   const accept = async (o) => {
-    // El pago del booster se calcula sobre el precio ORIGINAL (antes del descuento del promo).
-    // El descuento se descuenta de la ganancia, no del pago del booster.
-    const originalPrice = Number(o.price) + Number(o.discount_ars || 0);
-    const pay = Math.round(originalPrice * Number(profile.cut));
+    // El pago se calcula sobre el monto cobrado (USD → base en dólares; ARS → precio en pesos),
+    // sobre el importe original (antes del descuento del promo). El descuento sale de la ganancia.
+    const pay = previewBoosterPay(o, profile.cut, blue);
     const { data, error } = await supabase.from("orders")
       .update({ status: "in_progress", booster_id: profile.id, booster_name: profile.full_name, booster_pay: pay, profit: Number(o.price) - pay, accepted_at: new Date().toISOString() })
       .eq("id", o.id).eq("status", "available").select();
@@ -2677,7 +2698,7 @@ function BoosterBoard({ profile, orders, reload, flash, notify }) {
             {o.pref_times && <span><Clock size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />{o.pref_times}</span>}</div>}
           {o.notes && <p className="nop-mini" style={{ fontStyle: "italic" }}>"{o.notes}"</p>}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "auto", paddingTop: 8, borderTop: "1px solid var(--line)" }}>
-            <div><div className="nop-mini">Tu pago ({Math.round(profile.cut * 100)}%)</div><div className="nop-display" style={{ fontSize: 18, fontWeight: 700, color: "var(--gold)" }}>{fmtBoosterPay(previewBoosterPay(o, profile.cut), profile, blue)}</div></div>
+            <div><div className="nop-mini">Tu pago ({Math.round(profile.cut * 100)}%)</div><div className="nop-display" style={{ fontSize: 18, fontWeight: 700, color: "var(--gold)" }}>{fmtBoosterPay(previewBoosterPay(o, profile.cut, blue), profile, blue)}</div></div>
             <button className="nop-btn nop-btn-grn" onClick={() => accept(o)}><Check size={15} />Aceptar</button>
           </div>
         </div>))}</div>}
