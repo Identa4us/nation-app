@@ -2263,6 +2263,7 @@ function OrderModal({ o, onClose, onDelete, hideProfit, onEdited, flash, profile
       {o.status === "completed" && <F k="Duración del servicio" v={svcDuration(o)} />}
       {o.status === "completed" && <F k="Pago al booster" v={<span style={{ color: o.booster_paid ? "var(--grn)" : "var(--amber)", fontWeight: 700 }}>{o.booster_paid ? "Pago realizado ✓" : "Pago pendiente"}</span>} />}
       {o.receipt_path && <button className="nop-btn nop-btn-ghost" style={{ width: "100%", margin: "8px 0 0" }} onClick={() => openReceipt(o.receipt_path)}><Eye size={15} />Ver comprobante del cliente</button>}
+      {!hideProfit && o.booster_id && <OrderChat order={o} readOnly />}
       <div style={{ display: "grid", gridTemplateColumns: hideProfit ? "1fr" : "1fr 1fr 1fr", gap: 10, margin: "14px 0", textAlign: "center" }}>
         {!hideProfit && <S k="Precio" v={<span>{fmtCharged(o)}{isUsdOrder(o) && o.price ? <div className="nop-mini" style={{ color: "var(--mut2)", fontWeight: 400, marginTop: 2 }}>≈ {fmtARS(o.price)}</div> : null}</span>} c="var(--gold)" />}<S k="Pago booster" v={fmtARS(o.booster_pay)} c="var(--cyan)" />
         {!hideProfit && <S k="Ganancia" v={fmtARS(o.profit)} c="var(--grn)" />}
@@ -2704,6 +2705,99 @@ function BoosterBoard({ profile, orders, reload, flash, notify }) {
         </div>))}</div>}
   </>;
 }
+/* ===================== CHAT DEL PEDIDO ===================== */
+const chatImgUrl = (p) => { try { return p ? supabase.storage.from("chat").getPublicUrl(p).data.publicUrl : null; } catch (e) { return null; } };
+function OrderChat({ order, me, readOnly, defaultOpen }) {
+  const [msgs, setMsgs] = useState([]);
+  const [text, setText] = useState("");
+  const [file, setFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(!!(readOnly || defaultOpen));
+  const [err, setErr] = useState("");
+  const endRef = useRef(null);
+
+  const load = async () => {
+    const { data } = await supabase.from("order_messages").select("*").eq("order_id", order.id).order("created_at", { ascending: true });
+    setMsgs(data || []);
+  };
+  useEffect(() => {
+    load();
+    const ch = supabase.channel(`chat-${order.id}-${Math.random().toString(36).slice(2, 6)}`)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "order_messages", filter: `order_id=eq.${order.id}` },
+        (payload) => setMsgs((m) => m.some((x) => x.id === payload.new.id) ? m : [...m, payload.new]))
+      .subscribe();
+    return () => { try { supabase.removeChannel(ch); } catch (e) {} };
+    // eslint-disable-next-line
+  }, [order.id]);
+  useEffect(() => { if (open && endRef.current) endRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" }); }, [msgs, open]);
+
+  const send = async () => {
+    if ((!text.trim() && !file) || busy) return;
+    setBusy(true); setErr("");
+    try {
+      let imgPath = null;
+      if (file) {
+        const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+        const path = `${order.id}/${Date.now()}-${Math.random().toString(36).slice(2, 7)}.${ext}`;
+        const up = await supabase.storage.from("chat").upload(path, file);
+        if (up.error) throw up.error;
+        imgPath = path;
+      }
+      const { error } = await supabase.from("order_messages").insert({
+        order_id: order.id, sender_id: me.id, sender_role: me.role, sender_name: me.full_name,
+        body: text.trim() || null, image_path: imgPath,
+      });
+      if (error) throw error;
+      setText(""); setFile(null); load();
+    } catch (e) { setErr("No se pudo enviar: " + (e.message || e)); } finally { setBusy(false); }
+  };
+
+  const other = readOnly ? "el pedido" : (me && me.role === "booster" ? "el cliente" : "tu booster");
+  const bubbles = (
+    <div style={{ maxHeight: readOnly ? 340 : 300, overflowY: "auto", display: "flex", flexDirection: "column", gap: 8, padding: "4px 2px" }}>
+      {msgs.length === 0 && <p className="nop-mini" style={{ textAlign: "center", padding: "16px 0" }}>Todavía no hay mensajes. {readOnly ? "" : "Escribí el primero 👇"}</p>}
+      {msgs.map((m) => {
+        const mineMsg = readOnly ? m.sender_role === "booster" : (me && m.sender_id === me.id);
+        const img = chatImgUrl(m.image_path);
+        return <div key={m.id} style={{ alignSelf: mineMsg ? "flex-end" : "flex-start", maxWidth: "82%" }}>
+          <div style={{ fontSize: 10, color: "var(--mut2)", margin: mineMsg ? "0 4px 2px 0" : "0 0 2px 4px", textAlign: mineMsg ? "right" : "left" }}>{m.sender_name || m.sender_role} · {new Date(m.created_at).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</div>
+          <div style={{ background: mineMsg ? "var(--gold)" : "var(--bg2)", color: mineMsg ? "#1a1305" : "var(--tx)", borderRadius: 12, padding: img ? 6 : "8px 12px", fontSize: 13, lineHeight: 1.4, border: mineMsg ? "none" : "1px solid var(--line)", wordBreak: "break-word" }}>
+            {img && <img src={img} alt="" onClick={() => window.open(img, "_blank")} style={{ maxWidth: "100%", maxHeight: 220, borderRadius: 8, cursor: "pointer", display: "block", marginBottom: m.body ? 6 : 0 }} />}
+            {m.body && <span>{m.body}</span>}
+          </div>
+        </div>;
+      })}
+      <div ref={endRef} />
+    </div>
+  );
+
+  if (readOnly) return <div className="nop-card" style={{ padding: 14, background: "var(--bg2)", marginTop: 10 }}>
+    <div className="nop-panel-h" style={{ marginBottom: 10 }}><MessageCircle size={14} style={{ color: "var(--cyan)" }} />Resumen del chat ({msgs.length})</div>
+    {bubbles}
+  </div>;
+
+  return <div className="nop-card" style={{ padding: 12, background: "var(--bg2)", marginBottom: 14, border: "1px solid var(--line)" }}>
+    <button onClick={() => setOpen((v) => !v)} style={{ all: "unset", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, width: "100%" }}>
+      <MessageCircle size={15} style={{ color: "var(--cyan)" }} />
+      <b style={{ fontSize: 13 }}>Chat con {other}</b>
+      {msgs.length > 0 && <span className="nop-svc" style={{ background: "rgba(34,211,238,.15)", borderColor: "var(--cyan)", color: "var(--cyan)" }}>{msgs.length}</span>}
+      <ChevronRight size={16} style={{ marginLeft: "auto", transform: open ? "rotate(90deg)" : "none", transition: "transform .2s", color: "var(--mut)" }} />
+    </button>
+    {open && <div style={{ marginTop: 12 }}>
+      {bubbles}
+      {err && <div className="nop-mini" style={{ color: "var(--red)", margin: "6px 0" }}>{err}</div>}
+      {file && <div className="nop-mini" style={{ display: "flex", alignItems: "center", gap: 8, margin: "8px 0" }}><Eye size={12} />{file.name}<button className="nop-linkbtn" onClick={() => setFile(null)}>quitar</button></div>}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+        <label className="nop-iconbtn" style={{ cursor: "pointer", flexShrink: 0 }} title="Adjuntar imagen">
+          <Upload size={16} /><input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => setFile(e.target.files?.[0] || null)} />
+        </label>
+        <input className="nop-input" style={{ flex: 1 }} placeholder="Escribí un mensaje…" value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} />
+        <button className="nop-btn nop-btn-cyan nop-btn-sm" style={{ flexShrink: 0 }} disabled={busy} onClick={send}><Send size={14} />{busy ? "…" : "Enviar"}</button>
+      </div>
+    </div>}
+  </div>;
+}
+
 function BoosterMine({ profile, orders, reload, flash, notify }) {
   const mine = orders.filter((o) => o.booster_id === profile.id && o.status === "in_progress");
   const [progressFor, setProgressFor] = useState(null);
@@ -2772,6 +2866,7 @@ function BoosterMine({ profile, orders, reload, flash, notify }) {
             <Cred label="Contraseña" value={o.acct_pass} flash={flash} />
             <p className="nop-mini" style={{ marginTop: 10 }}>Jugá en modo offline. No las compartas con nadie.</p>
           </div>}
+          <OrderChat order={o} me={profile} />
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button className="nop-btn nop-btn-grn" onClick={() => finish(o)}><Flag size={15} />Marcar finalizado</button>
             <button className="nop-btn nop-btn-ghost" onClick={() => giveBack(o)}><ArrowRight size={15} style={{ transform: "rotate(180deg)" }} />Devolver servicio</button>
@@ -2860,7 +2955,7 @@ function ClientHome({ profile, orders, reload, flash, notify, setTab }) {
   </>;
   return <>
     <div className="nop-sectionhead"><div><h1 className="nop-h1">Mis pedidos</h1><p className="nop-sub">Seguí el estado en vivo.</p></div></div>
-    <div style={{ display: "grid", gap: 16 }}>{mine.map((o) => <ClientOrderCard key={o.id} o={o} reload={reload} flash={flash} notify={notify} />)}</div>
+    <div style={{ display: "grid", gap: 16 }}>{mine.map((o) => <ClientOrderCard key={o.id} o={o} profile={profile} reload={reload} flash={flash} notify={notify} />)}</div>
   </>;
 }
 function ClientHistory({ profile, orders, reload, flash, notify }) {
@@ -2891,7 +2986,7 @@ function ClientHistory({ profile, orders, reload, flash, notify }) {
       ) : <ClientOrderCard key={o.id} o={o} reload={reload} flash={flash} notify={notify} />)}</div>}
   </>;
 }
-function ClientOrderCard({ o, reload, flash, notify }) {
+function ClientOrderCard({ o, profile, reload, flash, notify }) {
   const [rating, setRating] = useState(5);
   const [comment, setComment] = useState("");
   const [rec, setRec] = useState(true);
@@ -2919,6 +3014,7 @@ function ClientOrderCard({ o, reload, flash, notify }) {
             : <><b style={{ fontSize: 13 }}>Tu booster es {o.booster_name}</b><div className="nop-mini">Entrá al Discord y buscá <b style={{ color: "var(--tx)" }}>#pedido-{o.id}</b>.</div></>}
         </div>
         <a className="nop-btn nop-btn-sm nop-btn-ghost" href={DISCORD_INVITE} target="_blank" rel="noreferrer">Abrir Discord</a></div>}
+      {o.status === "in_progress" && o.booster_id && profile && <div style={{ marginTop: 12 }}><OrderChat order={o} me={profile} defaultOpen /></div>}
       {o.status === "in_progress" && ["eloboost", "duoboost", "tft"].includes(o.service) && (() => {
         const pct = progressPct(o);
         const prLabel = o.progress_rank ? `${o.progress_rank}${o.progress_rank !== "Master" ? " " + (o.progress_div || "") : ""}` : `${o.cur_rank}${o.cur_rank !== "Master" ? " " + (o.cur_div || "") : ""}`;
