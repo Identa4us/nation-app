@@ -2707,7 +2707,7 @@ function BoosterBoard({ profile, orders, reload, flash, notify }) {
 }
 /* ===================== CHAT DEL PEDIDO ===================== */
 const chatImgUrl = (p) => { try { return p ? supabase.storage.from("chat").getPublicUrl(p).data.publicUrl : null; } catch (e) { return null; } };
-function OrderChat({ order, me, readOnly, defaultOpen }) {
+function OrderChat({ order, me, readOnly, defaultOpen, notify }) {
   const [msgs, setMsgs] = useState([]);
   const [text, setText] = useState("");
   const [file, setFile] = useState(null);
@@ -2748,6 +2748,11 @@ function OrderChat({ order, me, readOnly, defaultOpen }) {
         body: text.trim() || null, image_path: imgPath,
       });
       if (error) throw error;
+      // Avisar al otro (aparece en su campana de notificaciones)
+      try {
+        const recipientId = me.role === "booster" ? order.client_id : order.booster_id;
+        if (recipientId && notify) await notify(`💬 Nuevo mensaje de ${me.full_name || (me.role === "booster" ? "tu booster" : "el cliente")} en el pedido #${order.id}.`, null, recipientId, "bell", "order", order.id);
+      } catch (e) {}
       setText(""); setFile(null); load();
     } catch (e) { setErr("No se pudo enviar: " + (e.message || e)); } finally { setBusy(false); }
   };
@@ -2829,11 +2834,13 @@ function BoosterMine({ profile, orders, reload, flash, notify }) {
             <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}><b style={{ color: "var(--mut)" }}>#{o.id}</b><SvcTag s={o.service} /><StatusBadge s={o.status} /><RankPath o={o} /></div>
             <div className="nop-display" style={{ fontWeight: 700, color: "var(--gold)" }}>{fmtBoosterPay(o.booster_pay, profile, blue)}</div>
           </div>
-          <div className="nop-discordbox" style={{ marginBottom: 14 }}>
-            <div className="ic"><MessageCircle size={19} /></div>
-            <div style={{ flex: 1 }}><b style={{ fontSize: 13 }}>Coordiná con {o.client_name} ({o.client_discord})</b><div className="nop-mini">{o.summoner ? <>Invocador: <b style={{ color: "var(--tx)" }}>{o.summoner}</b> · </> : ""}Sala sugerida: <b style={{ color: "var(--tx)" }}>#pedido-{o.id}</b></div></div>
-            <a className="nop-btn nop-btn-sm nop-btn-ghost" href={DISCORD_INVITE} target="_blank" rel="noreferrer">Abrir Discord</a>
-          </div>
+          {["coaching", "duoboost"].includes(o.service)
+            ? <div className="nop-discordbox" style={{ marginBottom: 14 }}>
+                <div className="ic"><MessageCircle size={19} /></div>
+                <div style={{ flex: 1 }}><b style={{ fontSize: 13 }}>Coordiná con {o.client_name} ({o.client_discord})</b><div className="nop-mini">Usá el chat de acá abajo, o el Discord: <b style={{ color: "var(--tx)" }}>#pedido-{o.id}</b></div></div>
+                <a className="nop-btn nop-btn-sm nop-btn-ghost" href={DISCORD_INVITE} target="_blank" rel="noreferrer">Abrir Discord</a>
+              </div>
+            : o.summoner ? <div className="nop-mini" style={{ marginBottom: 14 }}>Invocador: <b style={{ color: "var(--tx)" }}>{o.summoner}</b></div> : null}
           {hasProgressUI && (
             <div className="nop-card" style={{ padding: 14, background: "var(--bg2)", marginBottom: 14 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
@@ -2866,7 +2873,7 @@ function BoosterMine({ profile, orders, reload, flash, notify }) {
             <Cred label="Contraseña" value={o.acct_pass} flash={flash} />
             <p className="nop-mini" style={{ marginTop: 10 }}>Jugá en modo offline. No las compartas con nadie.</p>
           </div>}
-          <OrderChat order={o} me={profile} />
+          <OrderChat order={o} me={profile} notify={notify} />
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button className="nop-btn nop-btn-grn" onClick={() => finish(o)}><Flag size={15} />Marcar finalizado</button>
             <button className="nop-btn nop-btn-ghost" onClick={() => giveBack(o)}><ArrowRight size={15} style={{ transform: "rotate(180deg)" }} />Devolver servicio</button>
@@ -3006,15 +3013,13 @@ function ClientOrderCard({ o, profile, reload, flash, notify }) {
     <div style={{ marginTop: 18 }}>
       {o.status === "pending" && <p className="nop-mini" style={{ textAlign: "center" }}>Estamos validando tu pago. Apenas confirmemos, tu pedido pasa a los boosters.</p>}
       {o.status === "available" && <p className="nop-mini" style={{ textAlign: "center" }}>¡Validado! Buscando booster… avisamos a todo el equipo.</p>}
-      {o.status === "in_progress" && <div className="nop-discordbox">
+      {o.status === "in_progress" && ["coaching", "duoboost"].includes(o.service) && <div className="nop-discordbox">
         <div className="ic"><MessageCircle size={19} /></div>
         <div style={{ flex: 1 }}>
-          {o.service === "eloboost"
-            ? <><b style={{ fontSize: 13 }}>Un booster del equipo está trabajando en tu cuenta</b><div className="nop-mini">Cualquier consulta, contactanos por Discord en <b style={{ color: "var(--tx)" }}>#pedido-{o.id}</b>.</div></>
-            : <><b style={{ fontSize: 13 }}>Tu booster es {o.booster_name}</b><div className="nop-mini">Entrá al Discord y buscá <b style={{ color: "var(--tx)" }}>#pedido-{o.id}</b>.</div></>}
+          <b style={{ fontSize: 13 }}>Tu booster es {o.booster_name}</b><div className="nop-mini">Coordiná por el chat de acá abajo, o entrá al Discord y buscá <b style={{ color: "var(--tx)" }}>#pedido-{o.id}</b>.</div>
         </div>
         <a className="nop-btn nop-btn-sm nop-btn-ghost" href={DISCORD_INVITE} target="_blank" rel="noreferrer">Abrir Discord</a></div>}
-      {o.status === "in_progress" && o.booster_id && profile && <div style={{ marginTop: 12 }}><OrderChat order={o} me={profile} defaultOpen /></div>}
+      {o.status === "in_progress" && o.booster_id && profile && <div style={{ marginTop: 12 }}><OrderChat order={o} me={profile} notify={notify} defaultOpen /></div>}
       {o.status === "in_progress" && ["eloboost", "duoboost", "tft"].includes(o.service) && (() => {
         const pct = progressPct(o);
         const prLabel = o.progress_rank ? `${o.progress_rank}${o.progress_rank !== "Master" ? " " + (o.progress_div || "") : ""}` : `${o.cur_rank}${o.cur_rank !== "Master" ? " " + (o.cur_div || "") : ""}`;
