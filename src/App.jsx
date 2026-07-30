@@ -631,13 +631,12 @@ function Auth() {
         if (error) throw error;
       } else if (mode === "signup") {
         if (!fullName) throw new Error("Ingresá tu nombre.");
-        if (!phone) throw new Error("Ingresá tu teléfono.");
-        if (discord && discord.trim()) {
-          const derr = validateDiscord(discord);
-          if (derr) throw new Error(derr);
+        if (boosterSignup) {
+          if (!phone) throw new Error("Ingresá tu teléfono.");
+          if (discord && discord.trim()) { const derr = validateDiscord(discord); if (derr) throw new Error(derr); }
+          if (!discord.trim()) throw new Error("Ingresá tu usuario de Discord.");
+          if (!cbu) throw new Error("Ingresá tu CBU o alias para cobrar.");
         }
-        if (role === "cliente" && !discord.trim()) throw new Error("Ingresá tu usuario de Discord (lo necesitás para coordinar el servicio).");
-        if (role === "booster" && !cbu) throw new Error("Ingresá tu CBU o alias para cobrar.");
         if (pass !== pass2) throw new Error("Las contraseñas no coinciden.");
         const { data, error } = await supabase.auth.signUp({
           email, password: pass,
@@ -693,15 +692,16 @@ function Auth() {
         {mode === "signup" && <>
           <div className="nop-field"><label>{boosterSignup ? "Nombre o nick" : "Nombre de invocador"} <span className="req">*</span></label>
             <input className="nop-input" value={fullName} onChange={(e) => setName(e.target.value)} placeholder={boosterSignup ? "Ej: Alkioz" : "Tu nombre de invocador en LoL"} /></div>
-          <div className="nop-row2">
-            <div className="nop-field"><label>Teléfono <span className="req">*</span></label>
-              <input className="nop-input" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Ej: +54 9 221 428 7466" /></div>
-            <div className="nop-field"><label>Usuario de Discord {role === "cliente" && <span className="req">*</span>}</label>
-              <input className="nop-input" value={discord} onChange={(e) => setDiscord(e.target.value)} placeholder="Ej: cristian88" /></div>
-          </div>
-          {role === "cliente" && <p className="nop-mini" style={{ marginTop: -6, marginBottom: 10 }}>Tu usuario de Discord es importante para coordinar el servicio con el booster.</p>}
-          {role === "booster" && <div className="nop-field"><label>CBU / Alias para cobrar <span className="req">*</span></label>
-            <input className="nop-input" value={cbu} onChange={(e) => setCbu(e.target.value)} placeholder="Tu CBU o alias de Mercado Pago / banco" /></div>}
+          {boosterSignup && <>
+            <div className="nop-row2">
+              <div className="nop-field"><label>Teléfono <span className="req">*</span></label>
+                <input className="nop-input" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Ej: +54 9 221 428 7466" /></div>
+              <div className="nop-field"><label>Usuario de Discord <span className="req">*</span></label>
+                <input className="nop-input" value={discord} onChange={(e) => setDiscord(e.target.value)} placeholder="Ej: cristian88" /></div>
+            </div>
+            <div className="nop-field"><label>CBU / Alias para cobrar <span className="req">*</span></label>
+              <input className="nop-input" value={cbu} onChange={(e) => setCbu(e.target.value)} placeholder="Tu CBU o alias de Mercado Pago / banco" /></div>
+          </>}
         </>}
 
         <div className="nop-field"><label>Email <span className="req">*</span></label>
@@ -2877,6 +2877,7 @@ function BoosterMine({ profile, orders, reload, flash, notify }) {
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button className="nop-btn nop-btn-grn" onClick={() => finish(o)}><Flag size={15} />Marcar finalizado</button>
             <button className="nop-btn nop-btn-ghost" onClick={() => giveBack(o)}><ArrowRight size={15} style={{ transform: "rotate(180deg)" }} />Devolver servicio</button>
+            <a className="nop-btn nop-btn-ghost" href={SUPPORT_WA} target="_blank" rel="noreferrer"><Headset size={15} style={{ color: "#25D366" }} />Soporte</a>
           </div>
         </div>);
       })}</div>}
@@ -3020,6 +3021,7 @@ function ClientOrderCard({ o, profile, reload, flash, notify }) {
         </div>
         <a className="nop-btn nop-btn-sm nop-btn-ghost" href={DISCORD_INVITE} target="_blank" rel="noreferrer">Abrir Discord</a></div>}
       {o.status === "in_progress" && o.booster_id && profile && <div style={{ marginTop: 12 }}><OrderChat order={o} me={profile} notify={notify} defaultOpen /></div>}
+      {o.status === "in_progress" && <a className="nop-btn nop-btn-ghost" style={{ marginTop: 12, width: "100%" }} href={SUPPORT_WA} target="_blank" rel="noreferrer"><Headset size={15} style={{ color: "#25D366" }} />Soporte</a>}
       {o.status === "in_progress" && ["eloboost", "duoboost", "tft"].includes(o.service) && (() => {
         const pct = progressPct(o);
         const prLabel = o.progress_rank ? `${o.progress_rank}${o.progress_rank !== "Master" ? " " + (o.progress_div || "") : ""}` : `${o.cur_rank}${o.cur_rank !== "Master" ? " " + (o.cur_div || "") : ""}`;
@@ -3123,7 +3125,7 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
   const [coachAddon, setCoachAddon] = useState(false); // coaching como extra en duoboost/tft
   const [discordInput, setDiscordInput] = useState(profile.discord || "");
   const [discordErr, setDiscordErr] = useState("");
-  const needsDiscord = !profile.discord;
+  const needsDiscord = !profile.discord && (["duoboost", "coaching"].includes(service) || coachAddon);
   const curPos = rankPos(cur, curD);
   const steps = rankPos(tgt, tgtD) - curPos;
   // Regla eloboost: como máximo 2 ligas adelante, y si es la segunda liga siguiente, solo hasta IV.
