@@ -1706,35 +1706,45 @@ function ReportsModal({ orders, flash, onClose }) {
   const mKey = (d) => { if (!d) return null; const x = new Date(d); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0"); };
   const mLabel = (k) => { const [y, m] = k.split("-"); return new Date(y, m - 1, 1).toLocaleDateString("es-AR", { month: "long", year: "numeric" }); };
   const fmtDate = (d) => d ? new Date(d).toLocaleDateString("es-AR") : "";
-  const done = orders.filter((o) => o.status === "completed");
+  // Fecha con la que se ubica el servicio en el mes: fin > toma > creación
+  const svcMonthDate = (o) => o.completed_at || o.accepted_at || o.created_at;
+  const [incProg, setIncProg] = useState(true); // incluir servicios en curso (no finalizados)
+  // Todo servicio con booster asignado (finalizado o en curso). Sin los que nunca arrancaron.
+  const done = orders.filter((o) => o.booster_id && (o.status === "completed" || (incProg && o.status === "in_progress")));
   const months = useMemo(() => {
-    const s = new Set(); done.forEach((o) => { const k = mKey(o.completed_at || o.created_at); if (k) s.add(k); });
+    const s = new Set(); done.forEach((o) => { const k = mKey(svcMonthDate(o)); if (k) s.add(k); });
     return Array.from(s).sort().reverse();
-  }, [orders]);
+  }, [orders, incProg]);
   const [sel, setSel] = useState(months.length ? [months[0]] : []);
   const [open, setOpen] = useState(false);
   const toggle = (k) => setSel(sel.includes(k) ? sel.filter((x) => x !== k) : [...sel, k]);
-  const rows = done.filter((o) => sel.includes(mKey(o.completed_at || o.created_at))).sort((a, b) => new Date(a.completed_at || 0) - new Date(b.completed_at || 0));
+  const rows = done.filter((o) => sel.includes(mKey(svcMonthDate(o)))).sort((a, b) => new Date(svcMonthDate(a) || 0) - new Date(svcMonthDate(b) || 0));
+  const origOf = (o) => Math.round(Number(o.price || 0) + Number(o.discount_ars || 0)); // precio pre-descuento (ARS)
   const totPrice = rows.reduce((a, o) => a + Number(o.price || 0), 0);
+  const totOrig = rows.reduce((a, o) => a + origOf(o), 0);
   const totPay = rows.reduce((a, o) => a + Number(o.booster_pay || 0), 0);
   const totProfit = rows.reduce((a, o) => a + Number(o.profit || 0), 0);
 
   const esc = (v) => { v = v == null ? "" : String(v); return /[";\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
   const download = () => {
     if (!rows.length) { flash("No hay servicios en los meses elegidos."); return; }
-    const head = ["#", "Usuario", "Discord", "Invocador", "Servicio", "Liga inicial", "Liga objetivo", "Servidor", "Rol/Detalle", "Booster", "Fecha inicio", "Fecha fin", "Duración", "Estado pago", "Moneda", "Precio (ARS)", "Cobrado USD", "Pago booster (ARS)", "Ganancia (ARS)"];
+    const head = ["#", "Usuario", "Discord", "Invocador", "Servicio", "Liga inicial", "Liga objetivo", "Servidor", "Rol/Detalle", "Booster", "Fecha inicio", "Fecha fin", "Duración", "Estado", "Estado pago", "Moneda", "Precio original (ARS)", "Descuento (ARS)", "Precio cobrado (ARS)", "Cobrado USD", "Pago booster (ARS)", "% booster (s/ original)", "Ganancia (ARS)"];
     const lines = [head.join(";")];
     rows.forEach((o) => {
+      const orig = origOf(o);
+      const disc = Math.round(Number(o.discount_ars || 0));
+      const pct = o.is_refund ? "devolución" : (orig > 0 ? Math.round((Number(o.booster_pay || 0) / orig) * 1000) / 10 + "%" : "");
       lines.push([
-        o.id, o.client_name, o.client_discord, o.summoner, SERVICES[o.service]?.label || o.service,
+        o.id, o.client_name, o.client_discord, o.summoner, svcOf(o.service)?.label || o.service,
         `${o.cur_rank || ""} ${o.cur_div || ""}`.trim(), `${o.tgt_rank || ""} ${o.tgt_div || ""}`.trim(),
         o.server, o.role_champ, o.booster_name,
         fmtDate(o.accepted_at), fmtDate(o.completed_at), svcDuration(o),
+        o.status === "completed" ? "Finalizado" : "En curso",
         o.booster_paid ? "Pagado" : "Pendiente", (o.currency || "ars").toUpperCase(),
-        Math.round(o.price || 0), o.currency === "usd" ? (o.usd_amount || "") : "", Math.round(o.booster_pay || 0), Math.round(o.profit || 0),
+        orig, disc, Math.round(o.price || 0), o.currency === "usd" ? (o.usd_amount || "") : "", Math.round(o.booster_pay || 0), pct, Math.round(o.profit || 0),
       ].map(esc).join(";"));
     });
-    lines.push(""); lines.push(["", "", "", "", "", "", "", "", "", "", "", "", "", "", "TOTALES", Math.round(totPrice), "", Math.round(totPay), Math.round(totProfit)].map(esc).join(";"));
+    lines.push(""); lines.push(["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "TOTALES", Math.round(totOrig), Math.round(totOrig - totPrice), Math.round(totPrice), "", Math.round(totPay), "", Math.round(totProfit)].map(esc).join(";"));
     const csv = "\uFEFF" + lines.join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -1747,8 +1757,11 @@ function ReportsModal({ orders, flash, onClose }) {
   return <div className="nop-modal" onClick={onClose}><div className="nop-card nop-modalbox" onClick={(e) => e.stopPropagation()}>
     <div className="hd"><h3>Reporte de servicios</h3><button className="nop-iconbtn" onClick={onClose}><X size={16} /></button></div>
     <div className="bd">
-      <p className="nop-mini" style={{ marginBottom: 12 }}>Elegí uno o varios meses. El reporte incluye todos los servicios finalizados con: booster, fechas de inicio y fin, estado de pago, precio, cobrado en USD, pago al booster y ganancia.</p>
-      {months.length === 0 ? <Empty icon={FileText} title="Sin servicios finalizados" sub="Todavía no hay datos para reportar." /> : <>
+      <p className="nop-mini" style={{ marginBottom: 12 }}>Elegí uno o varios meses. El reporte muestra el <b>precio original</b>, el <b>descuento</b> aplicado y el <b>% real</b> pagado a cada booster sobre el precio original (así se verifica el 50% / 60%).</p>
+      <label style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12, cursor: "pointer", fontSize: 13 }}>
+        <input type="checkbox" checked={incProg} onChange={(e) => setIncProg(e.target.checked)} /> Incluir servicios <b>en curso</b> (no finalizados)
+      </label>
+      {months.length === 0 ? <Empty icon={FileText} title="Sin servicios" sub="Todavía no hay datos para reportar." /> : <>
         <div className="nop-field"><label>Meses a incluir</label>
           <div style={{ position: "relative" }}>
             <button type="button" className="nop-select" style={{ textAlign: "left", cursor: "pointer", width: "100%" }} onClick={() => setOpen((v) => !v)}>
@@ -1765,7 +1778,8 @@ function ReportsModal({ orders, flash, onClose }) {
         </div>
         <div className="nop-card" style={{ padding: 14, background: "var(--bg2)", marginBottom: 14 }}>
           <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}><span className="nop-mini">Servicios</span><b>{rows.length}</b></div>
-          <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}><span className="nop-mini">Facturado (ARS)</span><b style={{ color: "var(--gold)" }}>{fmtARS(totPrice)}</b></div>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}><span className="nop-mini">Precio original (ARS)</span><b>{fmtARS(totOrig)}</b></div>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}><span className="nop-mini">Cobrado tras descuentos (ARS)</span><b style={{ color: "var(--gold)" }}>{fmtARS(totPrice)}</b></div>
           <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}><span className="nop-mini">Pago a boosters</span><b style={{ color: "var(--cyan)" }}>{fmtARS(totPay)}</b></div>
           <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}><span className="nop-mini">Ganancia</span><b style={{ color: "var(--grn)" }}>{fmtARS(totProfit)}</b></div>
         </div>
