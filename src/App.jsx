@@ -166,15 +166,13 @@ const isUsdOrder = (o) => !!o && o.currency === "usd" && o.usd_amount != null;
 const fmtCharged = (o) => isUsdOrder(o) ? fmtUSD(o.usd_amount) : fmtARS(o.price);
 // Pago FINAL al booster (siempre en pesos). El descuento del cliente NO lo toca:
 // se calcula sobre el precio ARS pre-descuento (price + discount_ars), igual que al asignar/aceptar.
-// Pago al booster en ARS (lo que se guarda internamente).
-// Para pedidos en USD, la base es el MONTO EN DÓLARES cobrado (así el % coincide
-// con lo que ve el cliente); se pasa a ARS con el blue. Para pedidos en pesos, base = precio ARS.
+// Pago al booster en ARS. El precio en PESOS es la fuente de verdad (para pedidos en USD,
+// el monto en dólares se deriva de pesos÷oficial, así que price sigue siendo el valor real).
+// Por eso el pago es SIEMPRE el % (cut) sobre el precio en pesos pre-descuento
+// (price + descuento). El descuento del promo sale de la ganancia, no del pago del booster.
+// Da el 50%/60% exacto sin importar el dólar ni cuándo se recalcule.
 function boosterPayArs(o, cut, blue) {
   const c = Number(cut || 0.5);
-  if (isUsdOrder(o) && blue) {
-    const usdBase = Number(o.usd_amount || 0) + Number(o.discount_usd || 0);
-    return Math.round(usdBase * c * blue);
-  }
   return Math.round((Number(o.price || 0) + Number(o.discount_ars || 0)) * c);
 }
 const previewBoosterPay = (o, cut, blue) => boosterPayArs(o, cut, blue);
@@ -193,6 +191,15 @@ async function fetchBlue() {
     const r = await fetch("https://api.bluelytics.com.ar/v2/latest");
     const j = await r.json();
     const v = Number(j?.blue?.value_sell || j?.blue?.value_avg);
+    return v > 0 ? v : null;
+  } catch (e) { return null; }
+}
+async function fetchOficial() {
+  // Dólar oficial (venta) — bluelytics. Se usa para convertir el precio de los servicios a USD.
+  try {
+    const r = await fetch("https://api.bluelytics.com.ar/v2/latest");
+    const j = await r.json();
+    const v = Number(j?.oficial?.value_sell || j?.oficial?.value_avg);
     return v > 0 ? v : null;
   } catch (e) { return null; }
 }
@@ -1431,8 +1438,8 @@ function NewOrderModal({ profiles, reload, flash, notify, onClose }) {
   const [priceManual, setPriceManual] = useState("");
   const [currency, setCurrency] = useState("ars");
   const [usdManual, setUsdManual] = useState("");          // monto USD que se le cobra al cliente (PayPal)
-  const [blue, setBlue] = useState(null);
-  useEffect(() => { if (currency === "usd" && !blue) fetchBlue().then(setBlue); }, [currency]);
+  const [blue, setBlue] = useState(null); // contiene el dólar OFICIAL (conversión a USD + pago booster)
+  useEffect(() => { if (currency === "usd" && !blue) fetchOficial().then(setBlue); }, [currency]);
   const [assign, setAssign] = useState("");                // booster_id
   const [entryType, setEntryType] = useState("servicio");  // 'servicio' | 'devolucion'
   const [boosterPayManual, setBoosterPayManual] = useState(""); // pago al booster (para devoluciones)
@@ -1501,14 +1508,10 @@ function NewOrderModal({ profiles, reload, flash, notify, onClose }) {
       usdAmt = usdManual ? Number(usdManual) : (blue ? Math.round((Number(finalPrice) / blue) * 100) / 100 : null);
       fxRate = blue || null;
     }
-    // Pago al booster: en USD la base es el monto en dólares; en ARS, el precio en pesos.
+    // Pago al booster: siempre el % sobre el precio en pesos (fuente de verdad).
     const boosterPay = isRefund
       ? Math.round(Number(boosterPayManual) || 0)
-      : (boosterProfile
-          ? (currency === "usd" && usdAmt && blue
-              ? Math.round(Number(usdAmt) * Number(boosterProfile.cut || 0.5) * blue)
-              : Math.round(Number(finalPrice) * Number(boosterProfile.cut || 0.5)))
-          : null);
+      : (boosterProfile ? Math.round(Number(finalPrice) * Number(boosterProfile.cut || 0.5)) : null);
 
     const row = {
       client_id: cliId, client_name: cliName, client_discord: cliDiscord,
@@ -3121,8 +3124,10 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
   useEffect(() => {
     if ((server === "LAN" || server === "BR") && currency === "ars") setCurrency("usd");
   }, [server]);
-  const [blue, setBlue] = useState(null);
-  useEffect(() => { if (currency === "usd" && !blue) fetchBlue().then(setBlue); }, [currency]);
+  const [blue, setBlue] = useState(null); // contiene el dólar OFICIAL (conversión a USD + pago booster)
+  useEffect(() => { if (currency === "usd" && !blue) fetchOficial().then(setBlue); }, [currency]);
+  const [oficial, setOficial] = useState(null); // dólar oficial para convertir el precio a USD
+  useEffect(() => { fetchOficial().then(setOficial); }, []);
   const [file, setFile] = useState(null);
   const [busy, setBusy] = useState(false);
   // Codigo promocional
@@ -3256,6 +3261,9 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
         usd: Math.round((usd * (1 + mult)) * 100) / 100,               // 2 decimales
       };
     }
+    // Precio en USD: dinámico = precio en pesos ÷ dólar OFICIAL del momento (los precios ARS mandan).
+    // Así el pago al booster siempre da el % exacto sobre el valor en pesos, sin importar el dólar.
+    if (oficial && base && base.ars != null) base.usd = Math.round((base.ars / oficial) * 100) / 100;
     // aplicar descuento del promo (si hay uno validado)
     let discArs = 0, discUsd = 0;
     if (promo) {
@@ -3278,7 +3286,7 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
       ars: Math.max(0, base.ars - discArs),
       usd: base.usd != null ? Math.max(0, base.usd - discUsd) : null,
     };
-  }, [service, cur, curD, tgt, tgtD, games, isCoaching, isElo, isSingleMatch, isPlacements, isTft, isDuo, coachAddon, placementMode, placementChamp, protectDec, rolOn, eloRoles, champOn, express, lp, blue, promo]);
+  }, [service, cur, curD, tgt, tgtD, games, isCoaching, isElo, isSingleMatch, isPlacements, isTft, isDuo, coachAddon, placementMode, placementChamp, protectDec, rolOn, eloRoles, champOn, express, lp, blue, oficial, promo]);
   const price = priceBoth.ars;
   const usdAmount = priceBoth.usd;
   const SvcIc = ({ k }) => { const Ic = SERVICES[k].icon; return <Ic size={19} />; };
@@ -3323,7 +3331,7 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
       let fxRate = null, usdAmt = null;
       if (currency === "usd") {
         usdAmt = usdAmount;
-        fxRate = blue || (await fetchBlue());
+        fxRate = oficial || (await fetchOficial()); // tasa OFICIAL congelada en el pedido
       }
       const noTgt = isCoaching || isSingleMatch || isPlacements;
       const row = {
