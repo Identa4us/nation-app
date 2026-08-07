@@ -893,9 +893,11 @@ function AdminValidate({ orders, profiles, accountRequests, reload, flash, notif
     try {
       const { error: ordErr } = await supabase.from("orders").insert({
         client_id: r.client_id || null, client_name: r.client_name || "—", client_discord: r.client_discord || null,
-        service: "cuenta", server: r.account_server || null,
+        service: "cuenta", server: r.account_server || "—",
+        cur_rank: "—", cur_div: "—", tgt_rank: "—", tgt_div: "—",
         role_champ: r.account_title || "Cuenta",
-        notes: `Venta de cuenta: ${r.account_title || ""}`.trim(),
+        notes: `Venta de cuenta #${r.id}: ${r.account_title || ""}`.trim(),
+        payment: (r.currency === "usd") ? "PayPal (USD)" : "Transferencia (pesos)",
         price: Number(r.account_price_ars || 0),
         currency: r.currency || "ars",
         usd_amount: r.currency === "usd" ? (r.account_price_usd ?? null) : null,
@@ -1238,8 +1240,8 @@ function AdminDash({ orders, profiles, reload, flash, notify, deleteOrder }) {
     </div>
     <div className="nop-grid-kpi" style={{ marginBottom: 14 }}>
       {kpi("Facturación (ganancia neta)", fmtARS(facturacion), Wallet, "var(--gold)", periodo + " · validados en adelante")}
-      {kpi("Servicios facturados", billed.filter((o) => !o.is_refund).length, TrendingUp, "var(--grn)", `${completed.filter((o) => !o.is_refund).length} cerrados`)}
-      {kpi("Servicios cerrados", completed.filter((o) => !o.is_refund).length, Trophy, "var(--cyan)", periodo)}
+      {kpi("Servicios facturados", billed.filter((o) => !o.is_refund && o.service !== "cuenta").length, TrendingUp, "var(--grn)", `${completed.filter((o) => !o.is_refund && o.service !== "cuenta").length} cerrados · ${billed.filter((o) => o.service === "cuenta").length} cuentas`)}
+      {kpi("Servicios cerrados", completed.filter((o) => !o.is_refund && o.service !== "cuenta").length, Trophy, "var(--cyan)", periodo)}
       {kpi("Servicios activos", liveActive.length, Zap, capacity.color, boosters.length > 0 ? capacity.label : "Cargá boosters para ver capacidad")}
     </div>
     <div className="nop-twocol" style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 14 }}>
@@ -3959,9 +3961,28 @@ function AdminAccounts({ accounts, profiles, accountRequests, reload, flash }) {
   const [sub, setSub] = useState("booster");
   const boosterAccts = (accounts || []).filter((a) => (a.kind || "booster") !== "client");
   const clientAccts = (accounts || []).filter((a) => a.kind === "client");
+  const sold = (accountRequests || []).filter((r) => r.status === "validated").sort((a, b) => new Date(b.validated_at || b.created_at || 0) - new Date(a.validated_at || a.created_at || 0));
+  const soldArs = sold.filter((r) => (r.currency || "ars") !== "usd").reduce((a, r) => a + Number(r.account_price_ars || 0), 0);
+  const soldUsd = sold.filter((r) => r.currency === "usd").reduce((a, r) => a + Number(r.account_price_usd || 0), 0);
   return <>
     <div className="nop-sectionhead"><div><h1 className="nop-h1">Cuentas</h1>
       <p className="nop-sub">Pool para los boosters y catálogo de cuentas a la venta para los clientes.</p></div></div>
+
+    {sold.length > 0 && <div className="nop-card nop-panel" style={{ marginBottom: 16 }}>
+      <div className="nop-panel-h"><Check size={15} style={{ color: "var(--grn)" }} />Cuentas vendidas ({sold.length})
+        <span className="nop-mini" style={{ marginLeft: "auto", fontWeight: 400 }}>Total: {soldArs > 0 && <b style={{ color: "var(--gold)" }}>{fmtARS(soldArs)}</b>}{soldArs > 0 && soldUsd > 0 && " · "}{soldUsd > 0 && <b style={{ color: "var(--grn)" }}>{fmtUSD(soldUsd)}</b>}</span></div>
+      <div className="nop-tablewrap"><table className="nop-t">
+        <thead><tr><th>Fecha</th><th>Cuenta</th><th>Liga · Servidor</th><th>Monto</th><th>Comprador</th></tr></thead>
+        <tbody>{sold.map((r) => <tr key={r.id}>
+          <td className="nop-mini">{fmtDay(r.validated_at || r.created_at)}</td>
+          <td><b style={{ fontSize: 13 }}>{r.account_title || "Cuenta"}</b></td>
+          <td className="nop-mini">{r.account_rank || "—"}{r.account_server ? ` · ${r.account_server}` : ""}</td>
+          <td style={{ color: "var(--gold)", fontWeight: 600 }}>{r.currency === "usd" ? (r.account_price_usd != null ? fmtUSD(r.account_price_usd) : "—") : (r.account_price_ars != null ? fmtARS(r.account_price_ars) : "—")}</td>
+          <td><div style={{ fontSize: 13 }}>{r.client_name || "—"}</div><div className="nop-mini">{r.client_discord || ""}</div></td>
+        </tr>)}</tbody>
+      </table></div>
+    </div>}
+
     <div className="nop-segwrap" style={{ marginBottom: 16, gridTemplateColumns: "repeat(2,1fr)", maxWidth: 460 }}>
       <button type="button" className={"nop-seg" + (sub === "booster" ? " on" : "")} onClick={() => setSub("booster")}>Cuentas boosters ({boosterAccts.length})</button>
       <button type="button" className={"nop-seg" + (sub === "client" ? " on" : "")} onClick={() => setSub("client")}>Cuentas clientes ({clientAccts.length})</button>
