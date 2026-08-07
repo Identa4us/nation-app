@@ -104,6 +104,24 @@ function opggUrl(summoner, server) {
   const tag = parts[1] ? encodeURIComponent(parts[1].trim()) : region.toUpperCase();
   return `https://op.gg/lol/summoners/${region}/${gameName}-${tag}`;
 }
+// Sonido corto tipo "ping" (dos notas), estilo Discord, sin archivo externo.
+let _pingCtx = null;
+function playPing() {
+  try {
+    _pingCtx = _pingCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = _pingCtx;
+    if (ctx.state === "suspended") ctx.resume();
+    const t0 = ctx.currentTime;
+    [[830.6, t0, 0.13], [1108.7, t0 + 0.11, 0.2]].forEach(([f, t, d]) => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = "sine"; o.frequency.setValueAtTime(f, t);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.22, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+      o.connect(g); g.connect(ctx.destination); o.start(t); o.stop(t + d + 0.03);
+    });
+  } catch (e) {}
+}
 
 // % de progreso del servicio a partir del rango inicial, actual y objetivo.
 function progressPct(o) {
@@ -339,7 +357,7 @@ export default function App() {
     if (!profile) return;
     const ch = supabase.channel("nop-rt")
       .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, () => reloadRef.current())
-      .on("postgres_changes", { event: "*", schema: "public", table: "notifications" }, () => reloadRef.current())
+      .on("postgres_changes", { event: "*", schema: "public", table: "notifications" }, (payload) => { if (payload.eventType === "INSERT" && payload.new && payload.new.recipient_id === profile.id) playPing(); reloadRef.current(); })
       .on("postgres_changes", { event: "*", schema: "public", table: "game_accounts" }, () => reloadRef.current())
       .on("postgres_changes", { event: "*", schema: "public", table: "account_requests" }, () => reloadRef.current())
       .subscribe();
@@ -868,8 +886,8 @@ function AdminValidate({ orders, profiles, accountRequests, reload, flash, notif
       gu = acc?.login_user || null; gp = acc?.login_pass || null;
     }
     await supabase.from("account_requests").update({ status: "validated", granted_user: gu, granted_pass: gp, validated_at: new Date().toISOString() }).eq("id", r.id);
-    // marcar la cuenta como vendida (sale del catálogo)
-    if (r.account_id != null) await supabase.from("game_accounts").update({ status: "deshabilitada" }).eq("id", r.account_id);
+    // marcar la cuenta como vendida (queda visible en gris en el catálogo)
+    if (r.account_id != null) await supabase.from("game_accounts").update({ sold: true }).eq("id", r.account_id);
     // registrar la venta como pedido (aparece en la pestaña Pedidos y en Contable)
     let ordWarn = "";
     try {
@@ -2499,9 +2517,9 @@ function AdminFinance({ orders, profiles, flash, reload }) {
         <span className="nop-mini">Recibís ≈ <b style={{ color: "var(--gold)" }}>{fmtARS(coArsIn)}</b></span>
         <button className="nop-btn nop-btn-grn nop-btn-sm" disabled={busy || saldoUsd <= 0} onClick={doCloseout}><RefreshCw size={13} />Registrar cierre</button>
       </div>
-      {conversions.length > 0 && <div style={{ marginTop: 14, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
-        <div className="nop-mini" style={{ marginBottom: 8 }}>Historial de conversiones</div>
-        {conversions.slice(0, 8).map((c) => <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "6px 0", fontSize: 12.5, color: "var(--mut)" }}>
+      {conversions.filter((c) => c.month === month).length > 0 && <div style={{ marginTop: 14, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+        <div className="nop-mini" style={{ marginBottom: 8 }}>Conversiones de {mLabel(month)}</div>
+        {conversions.filter((c) => c.month === month).map((c) => <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "6px 0", fontSize: 12.5, color: "var(--mut)" }}>
           <span>{new Date(c.created_at).toLocaleDateString("es-AR")} · {fmtUSD(c.usd_out)} → <b style={{ color: "var(--tx)" }}>{fmtARS(c.ars_in)}</b> <span className="nop-mini">(TC {fmtARS(c.rate)} · −{c.fee_pct}%)</span></span>
           <button className="nop-iconbtn" onClick={() => delConversion(c.id)}><Trash2 size={13} /></button>
         </div>)}
@@ -2542,7 +2560,7 @@ function AdminFinance({ orders, profiles, flash, reload }) {
             <td className="nop-mini">{(profiles || []).find((p) => p.id === o.booster_id)?.cbu || "—"}</td>
             <td><SvcTag s={o.service} /></td>
             <td className="nop-mini">{o.completed_at ? new Date(o.completed_at).toLocaleDateString("es-AR") : "—"}</td>
-            <td style={{ color: "var(--cyan)" }}>{fmtARS(o.booster_pay)}</td>
+            <td style={{ color: "var(--cyan)" }}>{fmtBoosterPay(o.booster_pay, (profiles || []).find((p) => p.id === o.booster_id), blue)}</td>
             <td><div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
               <button className="nop-btn nop-btn-gold nop-btn-sm" onClick={() => togglePaid(o, true)}><Check size={13} />Marcar pagado</button>
               {o.booster_receipt_path
@@ -2562,7 +2580,7 @@ function AdminFinance({ orders, profiles, flash, reload }) {
             <td>#{o.id}</td><td>{o.booster_name || "—"}</td>
             <td><SvcTag s={o.service} /></td>
             <td className="nop-mini">{o.booster_paid_at ? new Date(o.booster_paid_at).toLocaleDateString("es-AR") : "—"}</td>
-            <td style={{ color: "var(--grn)" }}>{fmtARS(o.booster_pay)}</td>
+            <td style={{ color: "var(--grn)" }}>{fmtBoosterPay(o.booster_pay, (profiles || []).find((p) => p.id === o.booster_id), blue)}</td>
             <td><div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
               <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => togglePaid(o, false)}>Revertir</button>
               {o.booster_receipt_path && <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => openReceipt(o.booster_receipt_path)}><Eye size={13} />Ver</button>}
@@ -2596,7 +2614,7 @@ function AdminFinance({ orders, profiles, flash, reload }) {
           <div className="nop-panel-h"><Banknote size={15} style={{ color: "var(--gold)" }} />Ajustar saldo de la cuenta</div>
           <p className="nop-mini" style={{ marginBottom: 12 }}>Sumá o restá un monto fijo a la cuenta (ej: una comisión de $75, un retiro, una corrección). Usá monto negativo para restar.</p>
           <AdjustForm onAdd={addAdjustment} />
-          {adjustments.length > 0 && <div style={{ marginTop: 12 }}>{adjustments.slice(0, 10).map((a) => <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "6px 0", fontSize: 12.5, color: "var(--mut)", borderBottom: "1px solid var(--line)" }}>
+          {adjustments.filter((a) => mKey(a.created_at) === month).length > 0 && <div style={{ marginTop: 12 }}>{adjustments.filter((a) => mKey(a.created_at) === month).map((a) => <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "6px 0", fontSize: 12.5, color: "var(--mut)", borderBottom: "1px solid var(--line)" }}>
             <span>{new Date(a.created_at).toLocaleDateString("es-AR")} · <b style={{ color: Number(a.amount) >= 0 ? "var(--grn)" : "var(--red)" }}>{Number(a.amount) >= 0 ? "+" : ""}{a.currency === "usd" ? fmtUSD(a.amount) : fmtARS(a.amount)}</b>{a.note ? ` · ${a.note}` : ""}</span>
             <button className="nop-iconbtn" onClick={() => delAdjustment(a.id)}><Trash2 size={13} /></button>
           </div>)}</div>}
@@ -3242,6 +3260,9 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
       if (promo.discount_type === "percent" && promo.discount_percent) {
         discArs = Math.round((base.ars * Number(promo.discount_percent) / 100) / 100) * 100;
         discUsd = Math.round((base.usd * Number(promo.discount_percent) / 100) * 100) / 100;
+        // Tope máximo de descuento (si el promo lo tiene)
+        if (promo.max_discount_ars) discArs = Math.min(discArs, Number(promo.max_discount_ars));
+        if (promo.max_discount_usd) discUsd = Math.min(discUsd, Number(promo.max_discount_usd));
       } else if (promo.discount_type === "amount") {
         discArs = Math.min(base.ars, Number(promo.discount_ars) || 0);
         discUsd = Math.min(base.usd || 0, Number(promo.discount_usd) || 0);
@@ -3709,7 +3730,7 @@ function AdminPromos({ flash }) {
   };
 
   const fmtDiscount = (r) => {
-    if (r.discount_type === "percent") return `${r.discount_percent}% off`;
+    if (r.discount_type === "percent") return `${r.discount_percent}% off` + (r.max_discount_ars || r.max_discount_usd ? ` (tope ${[r.max_discount_ars ? fmtARS(r.max_discount_ars) : null, r.max_discount_usd ? fmtUSD(r.max_discount_usd) : null].filter(Boolean).join(" / ")})` : "");
     const parts = [];
     if (r.discount_ars) parts.push(fmtARS(r.discount_ars));
     if (r.discount_usd) parts.push(fmtUSD(r.discount_usd));
@@ -3783,6 +3804,8 @@ function PromoForm({ onClose, onSaved, flash }) {
   const [code, setCode] = useState("");
   const [type, setType] = useState("percent");
   const [pct, setPct] = useState("");
+  const [maxArs, setMaxArs] = useState("");
+  const [maxUsd, setMaxUsd] = useState("");
   const [ars, setArs] = useState("");
   const [usd, setUsd] = useState("");
   // Modo de duración: "unlimited" | "single_use" | "date_range"
@@ -3818,6 +3841,8 @@ function PromoForm({ onClose, onSaved, flash }) {
       code: code.trim().toUpperCase(),
       discount_type: type,
       discount_percent: type === "percent" ? Number(pct) : null,
+      max_discount_ars: type === "percent" && maxArs ? Number(maxArs) : null,
+      max_discount_usd: type === "percent" && maxUsd ? Number(maxUsd) : null,
       discount_ars: type === "amount" && ars ? Number(ars) : null,
       discount_usd: type === "amount" && usd ? Number(usd) : null,
       valid_from: mode === "date_range" && validFrom ? validFrom : null,
@@ -3853,10 +3878,19 @@ function PromoForm({ onClose, onSaved, flash }) {
       </div>
 
       {type === "percent" ? (
+        <>
         <div className="nop-field"><label>Porcentaje <span className="req">*</span></label>
           <input className="nop-input" type="number" min="1" max="100" value={pct} onChange={(e) => setPct(e.target.value)} placeholder="Ej: 15" />
           <div className="nop-mini" style={{ marginTop: 6 }}>Se aplica igual sobre ARS y USD.</div>
         </div>
+        <div className="nop-row2">
+          <div className="nop-field"><label>Tope máximo ARS (opcional)</label>
+            <input className="nop-input" type="number" min="0" value={maxArs} onChange={(e) => setMaxArs(e.target.value)} placeholder="Ej: 10000" /></div>
+          <div className="nop-field"><label>Tope máximo USD (opcional)</label>
+            <input className="nop-input" type="number" min="0" step="0.01" value={maxUsd} onChange={(e) => setMaxUsd(e.target.value)} placeholder="Ej: 10" /></div>
+        </div>
+        <div className="nop-mini" style={{ marginTop: -4, marginBottom: 4 }}>Si el % supera el tope, se descuenta como máximo ese monto. Ej: 15% con tope $10.000 → el cliente necesita gastar $66.667 para llegar al tope.</div>
+        </>
       ) : (
         <div className="nop-row2">
           <div className="nop-field"><label>Monto ARS (opcional)</label>
@@ -4004,7 +4038,7 @@ function AdminBoosterAccounts({ accounts, profiles, reload, flash }) {
         <div className="nop-card nop-acc" key={a.id}>
           <div className="top">
             <div>
-              <div className="sm">{a.summoner}</div>
+              <div className="sm">{a.summoner}{opggUrl(a.summoner, a.server) && <> · <a href={opggUrl(a.summoner, a.server)} target="_blank" rel="noreferrer" style={{ color: "var(--cyan)", fontSize: 11, fontWeight: 600 }}>op.gg</a></>}</div>
               <div className="nop-mini">{a.rank || "—"}{a.server ? ` · ${a.server}` : ""}</div>
             </div>
             <AccStatusBadge s={a.status} />
@@ -4107,6 +4141,7 @@ function AccountSaleCard({ a, blue, children, showExtra, onClick }) {
         {a.server && <span className="nop-svc" style={{ background: "rgba(6,10,20,.7)", borderColor: "transparent", color: "#fff", backdropFilter: "blur(4px)" }}>{a.server}</span>}
         <span className="nop-svc" style={{ background: "rgba(6,10,20,.7)", borderColor: "transparent", color: rkColor, fontWeight: 700, backdropFilter: "blur(4px)" }}>{a.rank || "Unranked"}</span>
       </div>
+      {a.sold && <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}><span style={{ background: "rgba(6,10,20,.72)", color: "#fff", fontWeight: 800, letterSpacing: 2, padding: "6px 16px", borderRadius: 8, border: "1px solid rgba(255,255,255,.25)", fontSize: 15 }}>VENDIDA</span></div>}
     </div>
     <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 12, flex: 1 }}>
       <b style={{ fontSize: 15, lineHeight: 1.3, wordBreak: "break-word" }}>{a.summoner}</b>
@@ -4396,16 +4431,22 @@ function ClientAccounts({ profile, accounts, accountRequests, reload, flash, not
     {list.length === 0 ? <div className="nop-card"><Empty icon={Gamepad2} title="Sin resultados" sub="Probá con otro filtro o buscá otra skin." /></div> :
       <div className="nop-acc-grid">{list.map((a) => {
         const mr = reqByAccount[a.id];
-        return <AccountSaleCard key={a.id} a={a} blue={blue} showExtra onClick={() => setDetail(a)}>
-          {mr && mr.status === "validated"
-            ? <button className="nop-btn nop-btn-grn" style={{ width: "100%" }} onClick={() => setDetail(a)}><Check size={15} />Comprada · ver datos</button>
-            : mr && mr.status === "pending"
-              ? <button className="nop-btn nop-btn-ghost" disabled style={{ width: "100%" }}><Clock size={15} />Esperando validación</button>
-              : <div style={{ display: "flex", gap: 8 }}>
-                  <button className="nop-btn nop-btn-ghost nop-btn-sm" style={{ flex: 1 }} onClick={() => consultar(a)}><MessageCircle size={14} />Consultar</button>
-                  <button className="nop-btn nop-btn-gold nop-btn-sm" style={{ flex: 1 }} onClick={() => setAcquire(a)}><Wallet size={14} />Adquirir</button>
-                </div>}
-        </AccountSaleCard>;
+        const isBuyer = mr && mr.status === "validated";
+        const soldOut = a.sold && !isBuyer;
+        return <div key={a.id} style={soldOut ? { opacity: 0.55, filter: "grayscale(0.65)" } : undefined}>
+          <AccountSaleCard a={a} blue={blue} showExtra onClick={soldOut ? undefined : () => setDetail(a)}>
+            {isBuyer
+              ? <button className="nop-btn nop-btn-grn" style={{ width: "100%" }} onClick={() => setDetail(a)}><Check size={15} />Comprada · ver datos</button>
+              : a.sold
+                ? <button className="nop-btn nop-btn-ghost" disabled style={{ width: "100%" }}>Vendida</button>
+                : mr && mr.status === "pending"
+                  ? <button className="nop-btn nop-btn-ghost" disabled style={{ width: "100%" }}><Clock size={15} />Esperando validación</button>
+                  : <div style={{ display: "flex", gap: 8 }}>
+                      <button className="nop-btn nop-btn-ghost nop-btn-sm" style={{ flex: 1 }} onClick={() => consultar(a)}><MessageCircle size={14} />Consultar</button>
+                      <button className="nop-btn nop-btn-gold nop-btn-sm" style={{ flex: 1 }} onClick={() => setAcquire(a)}><Wallet size={14} />Adquirir</button>
+                    </div>}
+          </AccountSaleCard>
+        </div>;
       })}</div>}
 
     {detail && <AccountDetailModal a={detail} blue={blue} myReq={reqByAccount[detail.id]} profile={profile} flash={flash}
