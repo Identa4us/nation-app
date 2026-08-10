@@ -1210,7 +1210,6 @@ function AdminDash({ orders, profiles, reload, flash, notify, deleteOrder }) {
   // Facturación = suma de ganancias netas (precio - pago booster). Si no tiene booster asignado aún, la ganancia = precio.
   const factArs = billed.filter((o) => !isUsdOrder(o)).reduce((a, o) => a + orderProfitVal(o), 0);
   const factUsd = billed.filter((o) => isUsdOrder(o)).reduce((a, o) => a + orderProfitVal(o), 0);
-  const ganancia = facturacion; // mismo valor: ganancia neta acumulada
   const ratings = completed.filter((o) => o.survey_rating).map((o) => o.survey_rating);
   const avg = ratings.length ? ratings.reduce((a, b) => a + b, 0) / ratings.length : 0;
   const byService = Object.keys(SERVICES).map((k) => ({ name: SERVICES[k].label, value: scopedAll.filter((o) => o.service === k).length, color: SERVICES[k].color }));
