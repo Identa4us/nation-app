@@ -2450,12 +2450,15 @@ function AdminFinance({ orders, profiles, flash, reload }) {
   const isBilled = (o) => o.status === "available" || o.status === "in_progress" || o.status === "completed";
   const billed = orders.filter(isBilled);
   const completed = orders.filter((o) => o.status === "completed");
+  const isHistoric = (o) => o.client_name === "Histórico";
   const months = useMemo(() => {
-    const s = new Set([thisMonth]); billed.forEach((o) => { const k = mKey(o.completed_at || o.created_at); if (k) s.add(k); });
+    const s = new Set([thisMonth]);
+    billed.filter((o) => !isHistoric(o)).forEach((o) => { const k = mKey(o.created_at); if (k) s.add(k); });
     conversions.forEach((c) => { if (c.month) s.add(c.month); });
-    return Array.from(s).sort().reverse();
+    return ["all", ...Array.from(s).sort().reverse()];
   }, [orders, conversions]);
-  const inMonth = (o) => mKey(o.created_at) === month;
+  // En un mes puntual NO cuentan los históricos; solo aparecen con "Todos".
+  const inMonth = (o) => month === "all" ? true : (!isHistoric(o) && mKey(o.created_at) === month);
   const monthDone = billed.filter(inMonth);
   // Pagos a boosters: SOLO servicios finalizados (completed) con booster.
   const completedWithBooster = completed.filter((o) => o.booster_id);
@@ -2481,8 +2484,8 @@ function AdminFinance({ orders, profiles, flash, reload }) {
   const boostersDeuda = boostersTotal - boostersPagado;
 
   // --- GASTOS ---
-  const pesoOf = (e) => (e.currency === "usd" ? Number(e.amount || 0) * tarjetaRate : Number(e.amount || 0));
-  const monthExpenses = expenses.filter((e) => e.recurring || e.month === month);
+  const pesoOf = (e) => e.currency === "pct" ? Math.round(Number(e.amount || 0) / 100 * cobradoTotalArs) : (e.currency === "usd" ? Number(e.amount || 0) * tarjetaRate : Number(e.amount || 0));
+  const monthExpenses = expenses.filter((e) => e.recurring || month === "all" || e.month === month);
   const gastosTotal = monthExpenses.reduce((a, e) => a + pesoOf(e), 0);
 
   // --- GANANCIA ---
@@ -2499,7 +2502,7 @@ function AdminFinance({ orders, profiles, flash, reload }) {
   const saldoArs = Number(openArs || 0)
     + allDone.filter((o) => (o.currency || "ars") === "ars").reduce((a, o) => a + Number(o.price || 0), 0)
     - allDone.filter((o) => o.booster_paid && (o.booster_paid_ccy || "ars") === "ars").reduce((a, o) => a + (o.booster_paid_ars != null ? Number(o.booster_paid_ars) : (isUsdOrder(o) ? 0 : Number(o.booster_pay || 0))), 0)
-    - expenses.reduce((a, e) => a + pesoOf(e), 0)
+    - expenses.filter((e) => e.currency !== "pct").reduce((a, e) => a + pesoOf(e), 0)
     + convArsIn + adjArs;
   const saldoUsd = Number(openUsd || 0)
     + allDone.filter((o) => o.currency === "usd").reduce((a, o) => a + Number(o.usd_amount || 0) * (1 - pct), 0)
@@ -2578,17 +2581,32 @@ function AdminFinance({ orders, profiles, flash, reload }) {
   return <>
     <div className="nop-sectionhead">
       <div><h1 className="nop-h1">Gestión contable</h1>
-        <p className="nop-sub" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>Dólar blue: <b style={{ color: "var(--grn)" }}>{blue ? fmtARS(blue) : "…"}</b>
-          <button className="nop-linkbtn" style={{ display: "inline-flex", alignItems: "center", gap: 4, font: "inherit" }} onClick={() => fetchBlue().then(setBlue)}><RefreshCw size={12} />actualizar</button></p>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
-          <span className="nop-mini">Tipo de cambio manual (para pagar a boosters):</span>
-          <input className="nop-input" type="number" value={manualRate} onChange={(e) => setManualRate(e.target.value)} placeholder={blue ? String(blue) : "ej: 1500"} style={{ width: 120, padding: "5px 8px", fontSize: 13 }} />
-          <button className="nop-btn nop-btn-gold nop-btn-sm" disabled={busy} onClick={saveConfig}>Guardar TC</button>
-          <span className="nop-mini" style={{ color: "var(--mut2)" }}>Es el dólar que se usa para convertir a pesos el pago de servicios cobrados en USD.</span>
-        </div></div>
+        <p className="nop-sub">Saldos y movimientos. Elegí el período a la derecha.</p></div>
       <select className="nop-select" style={{ width: "auto", minWidth: 170 }} value={month} onChange={(e) => setMonth(e.target.value)}>
         {months.map((k) => <option key={k} value={k}>{mLabel(k)}</option>)}
       </select>
+    </div>
+
+    {/* BLOQUE DE COTIZACIONES */}
+    <div className="nop-card nop-panel" style={{ marginBottom: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr", gap: 16, alignItems: "center" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ width: 40, height: 40, borderRadius: 10, background: "rgba(52,211,153,.12)", display: "flex", alignItems: "center", justifyContent: "center" }}><TrendingUp size={20} style={{ color: "var(--grn)" }} /></div>
+          <div>
+            <div className="nop-mini" style={{ textTransform: "uppercase", letterSpacing: .5 }}>Dólar blue (referencia)</div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}><b style={{ fontSize: 20, color: "var(--grn)" }}>{blue ? fmtARS(blue) : "…"}</b>
+              <button className="nop-linkbtn" style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 12 }} onClick={() => fetchBlue().then(setBlue)}><RefreshCw size={11} />actualizar</button></div>
+          </div>
+        </div>
+        <div style={{ borderLeft: mobile ? "none" : "1px solid var(--line)", borderTop: mobile ? "1px solid var(--line)" : "none", paddingLeft: mobile ? 0 : 16, paddingTop: mobile ? 12 : 0 }}>
+          <div className="nop-mini" style={{ textTransform: "uppercase", letterSpacing: .5, marginBottom: 6 }}>Tipo de cambio para pagar a boosters</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <input className="nop-input" type="number" value={manualRate} onChange={(e) => setManualRate(e.target.value)} placeholder={blue ? String(blue) : "ej: 1500"} style={{ width: 130, padding: "8px 10px", fontWeight: 700, color: "var(--gold)" }} />
+            <button className="nop-btn nop-btn-gold nop-btn-sm" disabled={busy} onClick={saveConfig}>Guardar</button>
+          </div>
+          <div className="nop-mini" style={{ color: "var(--mut2)", marginTop: 6 }}>Convierte a pesos el pago de servicios cobrados en USD.</div>
+        </div>
+      </div>
     </div>
 
     {/* CUENTAS */}
@@ -2631,9 +2649,9 @@ function AdminFinance({ orders, profiles, flash, reload }) {
         <span className="nop-mini">Recibís ≈ <b style={{ color: "var(--gold)" }}>{fmtARS(coArsIn)}</b></span>
         <button className="nop-btn nop-btn-grn nop-btn-sm" disabled={busy || saldoUsd <= 0} onClick={doCloseout}><RefreshCw size={13} />Registrar cierre</button>
       </div>
-      {conversions.filter((c) => c.month === month).length > 0 && <div style={{ marginTop: 14, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+      {conversions.filter((c) => month === "all" || c.month === month).length > 0 && <div style={{ marginTop: 14, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
         <div className="nop-mini" style={{ marginBottom: 8 }}>Conversiones de {mLabel(month)}</div>
-        {conversions.filter((c) => c.month === month).map((c) => <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "6px 0", fontSize: 12.5, color: "var(--mut)" }}>
+        {conversions.filter((c) => month === "all" || c.month === month).map((c) => <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "6px 0", fontSize: 12.5, color: "var(--mut)" }}>
           <span>{new Date(c.created_at).toLocaleDateString("es-AR")} · {fmtUSD(c.usd_out)} → <b style={{ color: "var(--tx)" }}>{fmtARS(c.ars_in)}</b> <span className="nop-mini">(TC {fmtARS(c.rate)} · −{c.fee_pct}%)</span></span>
           <button className="nop-iconbtn" onClick={() => delConversion(c.id)}><Trash2 size={13} /></button>
         </div>)}
@@ -2728,7 +2746,7 @@ function AdminFinance({ orders, profiles, flash, reload }) {
           <div className="nop-panel-h"><Banknote size={15} style={{ color: "var(--gold)" }} />Ajustar saldo de la cuenta</div>
           <p className="nop-mini" style={{ marginBottom: 12 }}>Sumá o restá un monto fijo a la cuenta (ej: una comisión de $75, un retiro, una corrección). Usá monto negativo para restar.</p>
           <AdjustForm onAdd={addAdjustment} />
-          {adjustments.filter((a) => mKey(a.created_at) === month).length > 0 && <div style={{ marginTop: 12 }}>{adjustments.filter((a) => mKey(a.created_at) === month).map((a) => <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "6px 0", fontSize: 12.5, color: "var(--mut)", borderBottom: "1px solid var(--line)" }}>
+          {adjustments.filter((a) => month === "all" || mKey(a.created_at) === month).length > 0 && <div style={{ marginTop: 12 }}>{adjustments.filter((a) => month === "all" || mKey(a.created_at) === month).map((a) => <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "6px 0", fontSize: 12.5, color: "var(--mut)", borderBottom: "1px solid var(--line)" }}>
             <span>{new Date(a.created_at).toLocaleDateString("es-AR")} · <b style={{ color: Number(a.amount) >= 0 ? "var(--grn)" : "var(--red)" }}>{Number(a.amount) >= 0 ? "+" : ""}{a.currency === "usd" ? fmtUSD(a.amount) : fmtARS(a.amount)}</b>{a.note ? ` · ${a.note}` : ""}</span>
             <button className="nop-iconbtn" onClick={() => delAdjustment(a.id)}><Trash2 size={13} /></button>
           </div>)}</div>}
@@ -2752,26 +2770,28 @@ function AdjustForm({ onAdd }) {
 }
 function ExpensesPanel({ month, mLabel, monthExpenses, onAdd, onDel, onEdit, total, pesoOf, tarjetaRate }) {
   const [label, setLabel] = useState(""); const [amount, setAmount] = useState(""); const [recurring, setRecurring] = useState(true); const [ccy, setCcy] = useState("ars");
+  const unit = ccy === "pct" ? "%" : (ccy === "usd" ? "US$" : "$");
   return <div className="nop-card nop-panel">
-    <div className="nop-panel-h"><FileText size={15} style={{ color: "var(--red)" }} />Gastos · {mLabel(month)}</div>
-    {monthExpenses.length === 0 ? <p className="nop-mini" style={{ marginBottom: 12 }}>Sin gastos cargados.</p> :
+    <div className="nop-panel-h"><FileText size={15} style={{ color: "var(--red)" }} />Costos y comisiones · {mLabel(month)}</div>
+    <p className="nop-mini" style={{ marginBottom: 12 }}>Creá un costo con nombre y elegí si es un <b>monto fijo</b> (pesos o USD) o un <b>porcentaje del cobrado del mes</b> (ej: comisión de un socio).</p>
+    {monthExpenses.length === 0 ? <p className="nop-mini" style={{ marginBottom: 12 }}>Sin costos cargados.</p> :
       <div style={{ marginBottom: 12 }}>{monthExpenses.map((e) => <div key={e.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "7px 0", borderBottom: "1px solid var(--line)" }}>
-        <span style={{ flex: 1, fontSize: 13 }}>{e.label} <span className="nop-mini">· {e.recurring ? "fijo" : "puntual"}{e.currency === "usd" ? " · USD" : ""}</span>{e.currency === "usd" && <div className="nop-mini">≈ {fmtARS(pesoOf(e))} (al dólar tarjeta {fmtARS(tarjetaRate)})</div>}</span>
+        <span style={{ flex: 1, fontSize: 13 }}>{e.label} <span className="nop-mini">· {e.recurring ? "fijo" : "puntual"}{e.currency === "usd" ? " · USD" : e.currency === "pct" ? " · % del cobrado" : ""}</span>{(e.currency === "usd" || e.currency === "pct") && <div className="nop-mini">≈ {fmtARS(pesoOf(e))}{e.currency === "usd" ? ` (al dólar tarjeta ${fmtARS(tarjetaRate)})` : " este mes"}</div>}</span>
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-          <span className="nop-mini">{e.currency === "usd" ? "US$" : "$"}</span>
-          <input className="nop-input" type="number" style={{ width: 100, padding: "6px 8px" }} defaultValue={e.amount} onBlur={(ev) => Number(ev.target.value) !== Number(e.amount) && onEdit(e.id, ev.target.value)} />
+          <span className="nop-mini">{e.currency === "pct" ? "%" : e.currency === "usd" ? "US$" : "$"}</span>
+          <input className="nop-input" type="number" style={{ width: 90, padding: "6px 8px" }} defaultValue={e.amount} onBlur={(ev) => Number(ev.target.value) !== Number(e.amount) && onEdit(e.id, ev.target.value)} />
         </div>
         <button className="nop-iconbtn" onClick={() => onDel(e.id)}><Trash2 size={14} /></button>
       </div>)}</div>}
     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}><b className="nop-mini">Total del mes (en pesos)</b><b style={{ color: "var(--red)" }}>{fmtARS(total)}</b></div>
     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-      <input className="nop-input" style={{ flex: 1, minWidth: 110 }} placeholder="Nombre (ej: Netlify)" value={label} onChange={(e) => setLabel(e.target.value)} />
-      <select className="nop-select" style={{ width: 90 }} value={ccy} onChange={(e) => setCcy(e.target.value)}><option value="ars">Pesos</option><option value="usd">USD</option></select>
-      <input className="nop-input" type="number" style={{ width: 100 }} placeholder={ccy === "usd" ? "US$" : "$"} value={amount} onChange={(e) => setAmount(e.target.value)} />
+      <input className="nop-input" style={{ flex: 1, minWidth: 110 }} placeholder="Nombre (ej: Netlify, Comisión socio)" value={label} onChange={(e) => setLabel(e.target.value)} />
+      <select className="nop-select" style={{ width: 130 }} value={ccy} onChange={(e) => setCcy(e.target.value)}><option value="ars">Monto pesos</option><option value="usd">Monto USD</option><option value="pct">% del cobrado</option></select>
+      <input className="nop-input" type="number" style={{ width: 90 }} placeholder={unit} value={amount} onChange={(e) => setAmount(e.target.value)} />
     </div>
     <label style={{ display: "flex", gap: 8, alignItems: "center", margin: "10px 0", fontSize: 12.5, color: "var(--mut)", cursor: "pointer" }}>
-      <input type="checkbox" checked={recurring} onChange={(e) => setRecurring(e.target.checked)} /> Gasto fijo (se repite todos los meses)</label>
-    <button className="nop-btn nop-btn-ghost nop-btn-sm" disabled={!label || !amount} onClick={() => { onAdd(label, amount, recurring, ccy); setLabel(""); setAmount(""); }}><Plus size={13} />Agregar gasto</button>
+      <input type="checkbox" checked={recurring} onChange={(e) => setRecurring(e.target.checked)} /> Se repite todos los meses</label>
+    <button className="nop-btn nop-btn-ghost nop-btn-sm" disabled={!label || !amount} onClick={() => { onAdd(label, amount, recurring, ccy); setLabel(""); setAmount(""); }}><Plus size={13} />Agregar</button>
   </div>;
 }
 
