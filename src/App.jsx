@@ -1220,8 +1220,8 @@ function AdminDash({ orders, profiles, reload, flash, notify, deleteOrder }) {
   // Facturación empieza al VALIDAR el pedido: available + in_progress + completed cuentan.
   // Para el mes, usamos la fecha de creación (o completed_at si lo tiene).
   const isBilled = (o) => o.status === "available" || o.status === "in_progress" || o.status === "completed";
-  const billed = orders.filter((o) => isBilled(o) && inMonth(o.completed_at || o.created_at));
-  const completed = orders.filter((o) => o.status === "completed" && inMonth(o.completed_at || o.created_at));
+  const billed = orders.filter((o) => isBilled(o) && inMonth(o.created_at));
+  const completed = orders.filter((o) => o.status === "completed" && inMonth(o.created_at));
   const scopedAll = orders.filter((o) => inMonth(o.completed_at || o.created_at));
   // Facturación = suma de ganancias netas (precio - pago booster). Si no tiene booster asignado aún, la ganancia = precio.
   const factArs = billed.filter((o) => !isUsdOrder(o)).reduce((a, o) => a + orderProfitVal(o), 0);
@@ -1279,7 +1279,7 @@ function AdminDash({ orders, profiles, reload, flash, notify, deleteOrder }) {
     </div>
     <div className="nop-grid-kpi" style={{ marginBottom: 14 }}>
       {kpi("Ganancia neta", <span>{fmtARS(factArs)}{factUsd ? <div style={{ fontSize: 15, color: "var(--grn)" }}>{fmtUSD(factUsd)}</div> : null}</span>, Wallet, "var(--gold)", periodo + " · pesos y USD por separado")}
-      {kpi("Servicios facturados", billed.filter((o) => !o.is_refund && o.service !== "cuenta").length, TrendingUp, "var(--grn)", `${completed.filter((o) => !o.is_refund && o.service !== "cuenta").length} cerrados · ${billed.filter((o) => o.service === "cuenta").length} cuentas`)}
+      {kpi("Servicios facturados", billed.filter((o) => !o.is_refund).length, TrendingUp, "var(--grn)", `${billed.filter((o) => !o.is_refund && o.service !== "cuenta").length} servicios · ${billed.filter((o) => o.service === "cuenta").length} cuentas`)}
       {kpi("Servicios cerrados", completed.filter((o) => !o.is_refund && o.service !== "cuenta").length, Trophy, "var(--cyan)", periodo)}
       {kpi("Servicios activos", liveActive.length, Zap, capacity.color, boosters.length > 0 ? capacity.label : "Cargá boosters para ver capacidad")}
     </div>
@@ -2455,7 +2455,7 @@ function AdminFinance({ orders, profiles, flash, reload }) {
     conversions.forEach((c) => { if (c.month) s.add(c.month); });
     return Array.from(s).sort().reverse();
   }, [orders, conversions]);
-  const inMonth = (o) => mKey(o.completed_at || o.created_at) === month;
+  const inMonth = (o) => mKey(o.created_at) === month;
   const monthDone = billed.filter(inMonth);
   // Pagos a boosters: SOLO servicios finalizados (completed) con booster.
   const completedWithBooster = completed.filter((o) => o.booster_id);
@@ -2467,6 +2467,8 @@ function AdminFinance({ orders, profiles, flash, reload }) {
   // --- INGRESOS ---
   const arsOrders = monthDone.filter((o) => (o.currency || "ars") === "ars");
   const usdOrders = monthDone.filter((o) => o.currency === "usd");
+  const arsSvcCount = arsOrders.filter((o) => !o.is_refund && o.service !== "cuenta").length;
+  const usdSvcCount = usdOrders.filter((o) => !o.is_refund && o.service !== "cuenta").length;
   const cobradoArs = arsOrders.reduce((a, o) => a + Number(o.price || 0), 0);
   const cobradoUsdBruto = usdOrders.reduce((a, o) => a + Number(o.usd_amount || 0), 0);
   const cobradoUsdNeto = cobradoUsdBruto * (1 - pct);
@@ -2601,8 +2603,8 @@ function AdminFinance({ orders, profiles, flash, reload }) {
     <div className="nop-card nop-panel" style={{ marginBottom: 14 }}>
       <div className="nop-panel-h"><Activity size={15} style={{ color: "var(--gold)" }} />Resumen de {mLabel(month)}</div>
       <div className="nop-grid-kpi" style={{ gridTemplateColumns: mobile ? "repeat(2,1fr)" : "repeat(4,1fr)" }}>
-        {KPI({ lbl: "Cobrado (pesos)", val: fmtARS(cobradoArs), c: "var(--gold)", sub: arsOrders.length + " servicios" })}
-        {KPI({ lbl: "Cobrado (USD neto)", val: fmtUSD(cobradoUsdNeto), c: "var(--grn)", sub: `bruto ${fmtUSD(cobradoUsdBruto)} · ${usdOrders.length} serv.` })}
+        {KPI({ lbl: "Cobrado (pesos)", val: fmtARS(cobradoArs), c: "var(--gold)", sub: arsSvcCount + " servicios" + (arsOrders.length > arsSvcCount ? ` (+${arsOrders.length - arsSvcCount} cuenta)` : "") })}
+        {KPI({ lbl: "Cobrado (USD neto)", val: fmtUSD(cobradoUsdNeto), c: "var(--grn)", sub: `bruto ${fmtUSD(cobradoUsdBruto)} · ${usdSvcCount} serv.` + (usdOrders.length > usdSvcCount ? ` (+${usdOrders.length - usdSvcCount} cuenta)` : "") })}
         {KPI({ lbl: "Cobrado total", val: fmtARS(cobradoTotalArs), c: "var(--cyan)", sub: "en pesos (USD al blue del cobro)" })}
         {KPI({ lbl: "Servicios", val: monthDone.filter((o) => o.status === "completed" && !o.is_refund && o.service !== "cuenta").length, c: "var(--violet)", sub: `completados · ${monthDone.filter((o) => o.service === "cuenta").length} cuentas` })}
       </div>
