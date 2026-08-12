@@ -182,13 +182,11 @@ const orderProfitVal = (o) => Number(o.profit != null ? o.profit : (orderAmount(
 // Formateadores en moneda del pedido
 const fmtBoosterPay = (o) => fmtMoney(Number(o.booster_pay || 0), o);
 const fmtOrderProfit = (o) => fmtMoney(orderProfitVal(o), o);
-// Pago al booster TAL COMO SE LE PAGA (en la moneda en que cobra el booster).
-// La base (share) es el % del precio en la moneda del SERVICIO. Luego:
-//  - booster cobra pesos (default): servicio USD → share×TC (pesos) · servicio ARS → share (pesos).
-//  - booster cobra USD: servicio USD → share (USD) · servicio ARS → share÷TC (USD).
+// Pago al booster TAL COMO SE LE PAGA (moneda en que cobra el booster).
+// Usa el valor GUARDADO (o.booster_pay), que ya está en la moneda del servicio.
+// Nunca recalcula (así respeta devoluciones con pago manual y datos históricos).
 function boosterPayableText(o, prof, tc) {
-  const cut = prof ? Number(prof.cut || 0.5) : 0.5;
-  const share = orderBoosterPay(o, cut); // en la moneda del servicio
+  const share = Number(o.booster_pay || 0); // en la moneda del servicio
   const wantsUsd = prof && prof.pay_currency === "usd";
   if (isUsdOrder(o)) {
     if (wantsUsd) return fmtUSD(share);
@@ -197,12 +195,8 @@ function boosterPayableText(o, prof, tc) {
   if (wantsUsd) return tc ? fmtUSD(Math.round((share / tc) * 100) / 100) : fmtARS(share) + " · falta TC";
   return fmtARS(share);
 }
-// Ganancia en la MONEDA DEL SERVICIO = monto − share (share con el cut del booster)
-function orderProfitInService(o, prof) {
-  const cut = prof ? Number(prof.cut || 0.5) : 0.5;
-  const share = orderBoosterPay(o, cut);
-  return isUsdOrder(o) ? Math.round((Number(o.usd_amount || 0) - share) * 100) / 100 : Math.round(Number(o.price || 0) - share);
-}
+// Ganancia en la moneda del servicio = valor guardado
+function orderProfitInService(o, prof) { return Number(o.profit != null ? o.profit : (orderAmount(o) - Number(o.booster_pay || 0))); }
 // Lee el tipo de cambio manual (para mostrarle al booster su pago en pesos si cobra en pesos)
 async function fetchUsdRate() {
   try { const { data } = await supabase.from("app_usd_rate").select("usd_rate").maybeSingle(); return data?.usd_rate ? Number(data.usd_rate) : null; } catch (e) { return null; }
@@ -2817,7 +2811,7 @@ function BoosterBoard({ profile, orders, reload, flash, notify }) {
             {o.pref_times && <span><Clock size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />{o.pref_times}</span>}</div>}
           {o.notes && <p className="nop-mini" style={{ fontStyle: "italic" }}>"{o.notes}"</p>}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "auto", paddingTop: 8, borderTop: "1px solid var(--line)" }}>
-            <div><div className="nop-mini">Tu pago ({Math.round(profile.cut * 100)}%)</div><div className="nop-display" style={{ fontSize: 18, fontWeight: 700, color: "var(--gold)" }}>{boosterPayableText(o, profile, rate)}</div></div>
+            <div><div className="nop-mini">Tu pago ({Math.round(profile.cut * 100)}%)</div><div className="nop-display" style={{ fontSize: 18, fontWeight: 700, color: "var(--gold)" }}>{boosterPayableText({ ...o, booster_pay: orderBoosterPay(o, profile.cut) }, profile, rate)}</div></div>
             <button className="nop-btn nop-btn-grn" onClick={() => accept(o)}><Check size={15} />Aceptar</button>
           </div>
         </div>))}</div>}
