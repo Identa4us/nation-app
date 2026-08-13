@@ -1393,7 +1393,7 @@ function AdminOrders({ orders, profiles, reload, flash, deleteOrder, notify }) {
   const boosters = (profiles || []).filter((p) => p.role === "booster");
   const mKey = (d) => { if (!d) return null; const x = new Date(d); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0"); };
   const mLabel = (k) => { const [y, m] = k.split("-"); return new Date(y, m - 1, 1).toLocaleDateString("es-AR", { month: "long", year: "numeric" }); };
-  const availMonths = Array.from(new Set(orders.map((o) => mKey(o.created_at)).filter(Boolean))).sort().reverse();
+  const availMonths = Array.from(new Set(orders.filter((o) => o.client_name !== "Histórico").map((o) => mKey(o.created_at)).filter(Boolean))).sort().reverse();
   // Prioridad: in_progress → available → pending → completed → cancelled
   const statusPrio = { in_progress: 0, available: 1, pending: 2, completed: 3, cancelled: 4 };
   let list = orders.slice().sort((a, b) => {
@@ -1405,7 +1405,9 @@ function AdminOrders({ orders, profiles, reload, flash, deleteOrder, notify }) {
   if (fServer !== "todos") list = list.filter((o) => o.server === fServer);
   if (fService !== "todos") list = list.filter((o) => o.service === fService);
   if (fBooster !== "todos") list = list.filter((o) => (fBooster === "unassigned" ? !o.booster_id : o.booster_id === fBooster));
-  if (fMonth !== "todos") list = list.filter((o) => mKey(o.created_at) === fMonth);
+  if (fMonth === "hist") list = list.filter((o) => o.client_name === "Histórico");
+  else if (fMonth !== "todos") list = list.filter((o) => o.client_name !== "Histórico" && mKey(o.created_at) === fMonth);
+  else list = list.filter((o) => o.client_name !== "Histórico");
   if (q) list = list.filter((o) => (o.client_name + (o.client_discord || "") + o.id).toLowerCase().includes(q.toLowerCase()));
   return <>
     <div className="nop-sectionhead"><div><h1 className="nop-h1">Pedidos</h1><p className="nop-sub">Todos los servicios, en cualquier estado. Se muestran primero los activos y disponibles.</p></div>
@@ -1441,6 +1443,7 @@ function AdminOrders({ orders, profiles, reload, flash, deleteOrder, notify }) {
         <select className="nop-select" style={{ width: "auto", minWidth: 130 }} value={fMonth} onChange={(e) => setFMonth(e.target.value)}>
           <option value="todos">Mes: Todos</option>
           {availMonths.map((k) => <option key={k} value={k}>{mLabel(k)}</option>)}
+          <option value="hist">Histórico (carga masiva)</option>
         </select>
       </div>
     </div>
