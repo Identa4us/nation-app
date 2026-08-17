@@ -2208,7 +2208,12 @@ function OrderModal({ o, onClose, onDelete, hideProfit, onEdited, flash, profile
     };
     // montos editables
     if (f.booster_pay !== "" && f.booster_pay != null) patch.booster_pay = Number(f.booster_pay) || 0;
-    if (o.currency === "usd") patch.usd_amount = f.usd_amount === "" ? null : Number(f.usd_amount);
+    if (o.currency === "usd") {
+      patch.usd_amount = f.usd_amount === "" ? null : Number(f.usd_amount);
+      // el precio en pesos-equivalente se deriva del USD (para la referencia "≈ $")
+      const rate = Number(o.fx_rate) || Number(blueRate) || 0;
+      if (rate && patch.usd_amount != null) patch.price = Math.round(patch.usd_amount * rate);
+    }
     // reasignar / reparar booster: SIEMPRE fija booster_name según el seleccionado
     // (los boosters filtran por booster_id; el nombre es lo que se muestra en las tablas)
     const newBoosterId = f.booster_id || null;
@@ -2258,10 +2263,20 @@ function OrderModal({ o, onClose, onDelete, hideProfit, onEdited, flash, profile
             <select className="nop-select" value={f.tgt_rank} onChange={(e) => upd("tgt_rank", e.target.value)}>{RANKS.map((r) => <option key={r}>{r}</option>)}</select>
             <select className="nop-select" value={f.tgt_div} onChange={(e) => upd("tgt_div", e.target.value)} disabled={f.tgt_rank === "Master"}>{DIVS.map((d) => <option key={d}>{d}</option>)}</select></div></div>}
         </div>
-        <div className="nop-row2">
-          <div className="nop-field"><label>Precio (ARS)</label><input className="nop-input" type="number" value={f.price} onChange={(e) => upd("price", e.target.value)} /></div>
-          <div className="nop-field"><label>Pago al booster (ARS)</label><input className="nop-input" type="number" value={f.booster_pay} onChange={(e) => upd("booster_pay", e.target.value)} placeholder="0" /></div>
-        </div>
+        {o.currency === "usd" ? <>
+          <div className="nop-row2">
+            <div className="nop-field"><label>Precio cobrado (USD)</label><input className="nop-input" type="number" step="0.01" value={f.usd_amount} onChange={(e) => upd("usd_amount", e.target.value)} placeholder="US$" /></div>
+            <div className="nop-field"><label>Pago al booster (USD)</label><input className="nop-input" type="number" step="0.01" value={f.booster_pay} onChange={(e) => upd("booster_pay", e.target.value)} placeholder="US$ 0" />
+              <div className="nop-mini" style={{ marginTop: 5 }}>≈ {fmtARS(Math.round((Number(f.booster_pay) || 0) * (Number(o.fx_rate) || Number(blueRate) || 0)))} en pesos</div>
+            </div>
+          </div>
+          <div className="nop-mini" style={{ marginTop: -4, marginBottom: 8, color: "var(--amber)" }}>⚠️ Este pedido es en dólares: cargá los montos en USD (ej: comisión 21,60 — no 21600).</div>
+        </> : <>
+          <div className="nop-row2">
+            <div className="nop-field"><label>Precio (ARS)</label><input className="nop-input" type="number" value={f.price} onChange={(e) => upd("price", e.target.value)} /></div>
+            <div className="nop-field"><label>Pago al booster (ARS)</label><input className="nop-input" type="number" value={f.booster_pay} onChange={(e) => upd("booster_pay", e.target.value)} placeholder="0" /></div>
+          </div>
+        </>}
         <div className="nop-field"><label>Booster asignado</label>
           <select className="nop-select" value={f.booster_id} onChange={(e) => {
             const id = e.target.value; const nb = boosters.find((b) => b.id === id);
@@ -2276,7 +2291,6 @@ function OrderModal({ o, onClose, onDelete, hideProfit, onEdited, flash, profile
           </select>
           <div className="nop-mini" style={{ marginTop: 6 }}>Si cambiás el booster, el servicio se mueve a su perfil (desaparece del anterior). El pago se recalcula por su corte; podés ajustarlo arriba.</div>
         </div>
-        {o.currency === "usd" && <div className="nop-field"><label>Monto cobrado en USD</label><input className="nop-input" type="number" step="0.01" value={f.usd_amount} onChange={(e) => upd("usd_amount", e.target.value)} placeholder="USD" /></div>}
         {o.service === "eloboost" && <div className="nop-row2">
           <div className="nop-field"><label>Usuario de la cuenta</label><input className="nop-input" value={f.acct_user} onChange={(e) => upd("acct_user", e.target.value)} placeholder="usuario de login" /></div>
           <div className="nop-field"><label>Contraseña de la cuenta</label><input className="nop-input" value={f.acct_pass} onChange={(e) => upd("acct_pass", e.target.value)} placeholder="contraseña" /></div>
@@ -3378,20 +3392,21 @@ function ClientNew({ profile, reload, flash, notify, setTab }) {
     } else {
       // precio base (suma por división)
       let { ars, usd } = estimateBase(cur, curD, tgt, tgtD);
-      // multiplicadores ADITIVOS sobre el base (no compuestos)
-      let mult = 0;
-      if (service === "duoboost") mult += 0.50;                        // DuoBoost = +50%
-      if (isTft) mult -= 0.20;                                         // TFT = 20% más barato que eloboost base
-      if ((isDuo || isTft) && coachAddon) mult += 0.50;               // Coaching addon = +50%
+      // Cada recargo/descuento es un % REAL sobre el subtotal: se COMPONEN (multiplican),
+      // no se suman planos. Así "+50%" siempre agranda el precio un 50%, incluso apilados.
+      let mult = 1;
+      if (service === "duoboost") mult *= 1.50;                        // DuoBoost = +50%
+      if (isTft) mult *= 0.80;                                         // TFT = 20% más barato que eloboost base
+      if ((isDuo || isTft) && coachAddon) mult *= 1.50;               // Coaching addon = +50% sobre el subtotal
       if (isElo) {
-        if (lp === "+15") mult += 0.10;                                // LP +15 = +10%
-        if (rolOn && eloRoles.length) mult += 0.30;                    // Rol específico = +30%
-        if (champOn) mult += 0.50;                                     // Campeón específico = +50%
-        if (express) mult += 0.20;                                     // Express = +20%
+        if (lp === "+15") mult *= 1.10;                                // LP +15 = +10%
+        if (rolOn && eloRoles.length) mult *= 1.30;                    // Rol específico = +30%
+        if (champOn) mult *= 1.50;                                     // Campeón específico = +50%
+        if (express) mult *= 1.20;                                     // Express = +20%
       }
       base = {
-        ars: Math.round((ars * (1 + mult)) / 100) * 100,               // redondeo a centena
-        usd: Math.round((usd * (1 + mult)) * 100) / 100,               // 2 decimales
+        ars: Math.round((ars * mult) / 100) * 100,                     // redondeo a centena
+        usd: Math.round((usd * mult) * 100) / 100,                     // 2 decimales
       };
     }
     // aplicar descuento del promo (si hay uno validado)
