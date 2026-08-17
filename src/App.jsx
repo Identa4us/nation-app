@@ -1210,19 +1210,20 @@ function AdminDash({ orders, profiles, reload, flash, notify, deleteOrder }) {
 
   const monthKey = (d) => { if (!d) return null; const x = new Date(d); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0"); };
   const monthLabel = (k) => { const [y, m] = k.split("-"); return new Date(y, m - 1, 1).toLocaleDateString("es-AR", { month: "long", year: "numeric" }); };
+  const isHistoric = (o) => o.client_name === "Histórico";
   const months = useMemo(() => {
     const set = new Set();
-    orders.forEach((o) => { const k = monthKey(o.completed_at || o.created_at); if (k) set.add(k); });
+    orders.filter((o) => !isHistoric(o)).forEach((o) => { const k = monthKey(o.created_at); if (k) set.add(k); });
     return Array.from(set).sort().reverse();
   }, [orders]);
-  const inMonth = (d) => month === "all" || monthKey(d) === month;
+  // "Todos" incluye históricos; un mes puntual NO cuenta históricos, y ubica por fecha de creación.
+  const inMonth = (o) => month === "all" ? true : (!isHistoric(o) && monthKey(o.created_at) === month);
 
   // Facturación empieza al VALIDAR el pedido: available + in_progress + completed cuentan.
-  // Para el mes, usamos la fecha de creación (o completed_at si lo tiene).
   const isBilled = (o) => o.status === "available" || o.status === "in_progress" || o.status === "completed";
-  const billed = orders.filter((o) => isBilled(o) && inMonth(o.created_at));
-  const completed = orders.filter((o) => o.status === "completed" && inMonth(o.created_at));
-  const scopedAll = orders.filter((o) => inMonth(o.completed_at || o.created_at));
+  const billed = orders.filter((o) => isBilled(o) && inMonth(o));
+  const completed = orders.filter((o) => o.status === "completed" && inMonth(o));
+  const scopedAll = orders.filter((o) => inMonth(o));
   // Facturación = suma de ganancias netas (precio - pago booster). Si no tiene booster asignado aún, la ganancia = precio.
   const factArs = billed.filter((o) => !isUsdOrder(o)).reduce((a, o) => a + orderProfitVal(o), 0);
   const factUsd = billed.filter((o) => isUsdOrder(o)).reduce((a, o) => a + orderProfitVal(o), 0);
@@ -2373,12 +2374,15 @@ function OrderModal({ o, onClose, onDelete, hideProfit, onEdited, flash, profile
 }
 
 /* ===================== CONTABLE (ADMIN) ===================== */
-function PayBoosterModal({ o, prof, tc, onClose, onConfirm }) {
+function PayBoosterModal({ o, prof, tc, onClose, onConfirm, onUnpay }) {
   const isUsd = o.currency === "usd" && o.usd_amount != null;
   const share = Number(o.booster_pay || 0); // en la moneda del servicio
   const cutPct = prof ? Math.round(Number(prof.cut || 0.5) * 100) : "?";
-  const defCcy = (prof && prof.pay_currency === "usd") ? "usd" : "ars";
+  // Al EDITAR un pago ya hecho, precargar el monto/moneda que se había cargado.
+  const already = o.booster_paid && o.booster_paid_ccy;
+  const defCcy = already ? o.booster_paid_ccy : ((prof && prof.pay_currency === "usd") ? "usd" : "ars");
   const suggested = (c) => {
+    if (already && c === o.booster_paid_ccy) return c === "usd" ? (o.booster_paid_usd ?? "") : (o.booster_paid_ars ?? "");
     if (isUsd) return c === "usd" ? share : (tc ? Math.round(share * tc) : "");
     return c === "usd" ? (tc ? Math.round((share / tc) * 100) / 100 : "") : share;
   };
@@ -2387,7 +2391,7 @@ function PayBoosterModal({ o, prof, tc, onClose, onConfirm }) {
   const [busy, setBusy] = useState(false);
   const pickCcy = (c) => { setCcy(c); setAmount(String(suggested(c))); };
   return <div className="nop-modal" onClick={onClose}><div className="nop-card nop-modalbox" style={{ maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
-    <div className="hd"><h3 style={{ margin: 0 }}>Pagar a {o.booster_name}</h3><button className="nop-iconbtn" onClick={onClose}><X size={16} /></button></div>
+    <div className="hd"><h3 style={{ margin: 0 }}>{o.booster_paid ? "Editar pago a" : "Pagar a"} {o.booster_name}</h3><button className="nop-iconbtn" onClick={onClose}><X size={16} /></button></div>
     <div className="bd">
       <div className="nop-card" style={{ padding: 12, background: "var(--bg2)", marginBottom: 14 }}>
         <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span className="nop-mini">Pedido</span><b>#{o.id} · {svcOf(o.service)?.label || o.service}</b></div>
@@ -2409,8 +2413,9 @@ function PayBoosterModal({ o, prof, tc, onClose, onConfirm }) {
       <div className="nop-mini" style={{ marginBottom: 12 }}>Se va a descontar {ccy === "usd" ? <b style={{ color: "var(--grn)" }}>{fmtUSD(Number(amount) || 0)}</b> : <b style={{ color: "var(--gold)" }}>{fmtARS(Number(amount) || 0)}</b>} de la cuenta en {ccy === "usd" ? "USD" : "pesos"}.</div>
       <div style={{ display: "flex", gap: 8 }}>
         <button className="nop-btn nop-btn-ghost" style={{ flex: 1 }} onClick={onClose}>Cancelar</button>
-        <button className="nop-btn nop-btn-grn" style={{ flex: 1 }} disabled={busy || !amount} onClick={async () => { setBusy(true); await onConfirm(o, ccy, Number(amount) || 0); }}><Check size={15} />Confirmar pago</button>
+        <button className="nop-btn nop-btn-grn" style={{ flex: 1 }} disabled={busy || !amount} onClick={async () => { setBusy(true); await onConfirm(o, ccy, Number(amount) || 0); }}><Check size={15} />{o.booster_paid ? "Guardar cambios" : "Confirmar pago"}</button>
       </div>
+      {o.booster_paid && onUnpay && <button className="nop-linkbtn" style={{ display: "block", margin: "12px auto 0", color: "var(--amber)" }} onClick={async () => { setBusy(true); await onUnpay(o); }}>Marcar como no pagado (vuelve a pendientes)</button>}
     </div>
   </div></div>;
 }
@@ -2574,12 +2579,25 @@ function AdminFinance({ orders, profiles, flash, reload }) {
     flash(`Pago del #${o.id} marcado como pendiente`);
     if (reload) await reload();
   };
-  // Confirmar pago desde el modal, con la moneda y el monto que definió el admin
+  // Confirmar/editar el pago: el monto ingresado REDEFINE el pago al booster y la ganancia.
+  // El monto del servicio (price / usd_amount) NUNCA cambia.
   const confirmPay = async (o, ccy, amount) => {
-    const patch = { booster_paid: true, booster_paid_at: new Date().toISOString(), booster_paid_ccy: ccy, booster_paid_usd: ccy === "usd" ? Number(amount) || 0 : null, booster_paid_ars: ccy === "ars" ? Number(amount) || 0 : null };
+    const rate = Number(manualRate) || Number(blue) || 0;
+    const amt = Number(amount) || 0;
+    // Pago al booster expresado en la MONEDA DEL SERVICIO (para ganancia y para Pedidos)
+    let payService;
+    if (isUsdOrder(o)) payService = ccy === "usd" ? amt : (rate ? Math.round((amt / rate) * 100) / 100 : amt);
+    else payService = ccy === "ars" ? amt : (rate ? Math.round(amt * rate) : amt);
+    const svcAmount = isUsdOrder(o) ? Number(o.usd_amount || 0) : Number(o.price || 0);
+    const newProfit = isUsdOrder(o) ? Math.round((svcAmount - payService) * 100) / 100 : Math.round(svcAmount - payService);
+    const patch = {
+      booster_paid: true, booster_paid_at: o.booster_paid_at || new Date().toISOString(),
+      booster_paid_ccy: ccy, booster_paid_usd: ccy === "usd" ? amt : null, booster_paid_ars: ccy === "ars" ? amt : null,
+      booster_pay: payService, profit: newProfit,
+    };
     await supabase.from("orders").update(patch).eq("id", o.id);
     setPayFor(null);
-    flash(`Pago del #${o.id} registrado (${ccy === "usd" ? fmtUSD(amount) : fmtARS(amount)})`);
+    flash(`Pago del #${o.id} actualizado (${ccy === "usd" ? fmtUSD(amt) : fmtARS(amt)})`);
     if (reload) await reload();
   };
   const togglePaid = (o, paid) => { if (paid) setPayFor(o); else unpay(o); };
@@ -2731,7 +2749,7 @@ function AdminFinance({ orders, profiles, flash, reload }) {
             <td className="nop-mini">{o.booster_paid_at ? new Date(o.booster_paid_at).toLocaleDateString("es-AR") : "—"}</td>
             <td style={{ color: "var(--grn)" }}>{payDisplay(o)}</td>
             <td><div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-              <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => togglePaid(o, false)}>Revertir</button>
+              <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => setPayFor(o)}>Editar pago</button>
               {o.booster_receipt_path && <button className="nop-btn nop-btn-ghost nop-btn-sm" onClick={() => openReceipt(o.booster_receipt_path)}><Eye size={13} />Ver</button>}
             </div></td>
           </tr>)}</tbody>
@@ -2770,7 +2788,7 @@ function AdminFinance({ orders, profiles, flash, reload }) {
         </div>
       </div>}
     </div>
-    {payFor && <PayBoosterModal o={payFor} prof={(profiles || []).find((p) => p.id === payFor.booster_id)} tc={Number(manualRate) || Number(blue) || 0} onClose={() => setPayFor(null)} onConfirm={confirmPay} />}
+    {payFor && <PayBoosterModal o={payFor} prof={(profiles || []).find((p) => p.id === payFor.booster_id)} tc={Number(manualRate) || Number(blue) || 0} onClose={() => setPayFor(null)} onConfirm={confirmPay} onUnpay={unpay} />}
   </>;
 }
 function AdjustForm({ onAdd }) {
